@@ -1,0 +1,114 @@
+Metadata-Version: 2.4
+Name: arx-d-can
+Version: 0.1.0
+Summary: Standalone ARX-D-CAN Python SDK for Damiao motors over USB2CAN.
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: motorbridge
+Requires-Dist: numpy>=1.23
+Requires-Dist: pyserial==3.5
+Requires-Dist: pyyaml>=6.0
+Provides-Extra: dynamics
+Requires-Dist: pin>=3.0; extra == "dynamics"
+Provides-Extra: dev
+Requires-Dist: pytest>=7.0; extra == "dev"
+
+# ARX-D-CAN Python SDK
+
+这个目录可以作为独立 Python SDK 发给同事使用。它通过 USB2CAN 串口控制
+Damiao 电机，默认配置是当前 ARX-D-CAN 单臂：
+
+- 串口：`/dev/ttyACM0`
+- 串口波特率：`1000000`
+- 关节电机：`0x01` 到 `0x06`
+- 夹抓电机：`0x07`
+- 默认控制模式：`posvel`
+- 夹抓输入：`0..1000`，`1000` 表示张开
+
+## 安装
+
+```bash
+cd arx_d_can
+python -m pip install -e .
+```
+
+如果要使用运动学、动力学、末端位姿控制等 Pinocchio 功能：
+
+```bash
+python -m pip install -e ".[dynamics]"
+```
+
+如果 `motorbridge` 不是从 PyPI 安装的，需要先按你们内部方式安装
+`motorbridge`，然后再安装本 SDK。
+
+## 基础示例
+
+```bash
+sudo chmod 666 /dev/ttyACM0
+
+python examples/example_01_scan_ids.py
+python examples/example_02_read_state.py
+python examples/example_03_zero_current_position.py
+python examples/example_04_send_position.py "0,-0.2,-0.2,0,0,0"
+python examples/example_05_gripper_open_close.py
+python examples/example_06_benchmark_read_rate.py --target-hz 500 --seconds 5
+python examples/example_07_change_damiao_id.py --port /dev/ttyACM0
+```
+
+所有示例都支持 `--port` 和 `--baud`：
+
+```bash
+python examples/example_01_scan_ids.py --port /dev/ttyACM4 --baud 1000000
+```
+
+`example_03_zero_current_position.py` 默认只显示当前状态，必须加 `--yes` 才会写零点。
+`example_04_send_position.py` 是唯一的位置发送示例，接收 6 关节目标位置并发送；
+需要慢慢过去就加 `--move-seconds`，需要连续输入多帧就加 `--stdin`，需要回零就加
+`--return-zero`。
+`example_06_benchmark_read_rate.py` 用来测读取频率，默认会主动请求电机反馈；加
+`--no-request-feedback` 时只测缓存读取开销。
+`example_07_change_damiao_id.py` 用来修正达妙电机 ID，默认 dry-run；确认后加
+`--yes` 才会把夹抓从 `0x01/0x11` 改成 `0x07/0x17`。
+
+## Python API
+
+```python
+from arx_d_can import ArxDCanArm
+
+arm = ArxDCanArm(port="/dev/ttyACM0", baud=1_000_000)
+try:
+    arm.connect()
+    arm.configure()
+    arm.enable()
+    arm.send_joint_positions([0.0, -1.047, -1.047, 0.0, 0.0, 0.0])
+    state = arm.read_state()
+    print(state.arm.positions)
+finally:
+    arm.close(disable=True)
+```
+
+夹抓需要显式启用：
+
+```python
+from arx_d_can import ArxDCanArm
+
+arm = ArxDCanArm(port="/dev/ttyACM0", enable_gripper=True)
+try:
+    arm.connect()
+    arm.configure()
+    arm.enable()
+    arm.set_gripper(1000.0)  # open
+finally:
+    arm.close(disable=True)
+```
+
+## 配置
+
+默认硬件配置在 `config/arx_d_can_dm.yaml`。如果同事的串口、电机 ID、反馈 ID
+或控制增益不同，先改这个文件再运行。
+
+写零点命令会修改电机零位，只有机械臂已经摆到确认的零位时再执行：
+
+```bash
+python examples/example_03_zero_current_position.py --yes
+```

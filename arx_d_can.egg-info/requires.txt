@@ -1,0 +1,10 @@
+motorbridge
+numpy>=1.23
+pyserial==3.5
+pyyaml>=6.0
+
+[dev]
+pytest>=7.0
+
+[dynamics]
+pin>=3.0
