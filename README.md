@@ -1,6 +1,6 @@
 # ARX-D-CAN Python SDK
 
-这个目录可以作为独立 Python SDK 发给同事使用。它通过 USB2CAN 串口控制
+ARX 通过 USB2CAN 串口控制
 Damiao 电机，默认配置是当前 ARX-D-CAN 单臂：
 
 - 串口：`/dev/ttyACM0`

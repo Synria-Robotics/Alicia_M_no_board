@@ -6,5 +6,7 @@ pyyaml>=6.0
 [dev]
 pytest>=7.0
 
-[dynamics]
-pin>=3.0
+[kinematics]
+robocore
+synriard
+scipy>=1.9

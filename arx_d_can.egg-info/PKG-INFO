@@ -8,14 +8,16 @@ Requires-Dist: motorbridge
 Requires-Dist: numpy>=1.23
 Requires-Dist: pyserial==3.5
 Requires-Dist: pyyaml>=6.0
-Provides-Extra: dynamics
-Requires-Dist: pin>=3.0; extra == "dynamics"
+Provides-Extra: kinematics
+Requires-Dist: robocore; extra == "kinematics"
+Requires-Dist: synriard; extra == "kinematics"
+Requires-Dist: scipy>=1.9; extra == "kinematics"
 Provides-Extra: dev
 Requires-Dist: pytest>=7.0; extra == "dev"
 
 # ARX-D-CAN Python SDK
 
-这个目录可以作为独立 Python SDK 发给同事使用。它通过 USB2CAN 串口控制
+ARX 通过 USB2CAN 串口控制
 Damiao 电机，默认配置是当前 ARX-D-CAN 单臂：
 
 - 串口：`/dev/ttyACM0`
@@ -32,10 +34,10 @@ cd arx_d_can
 python -m pip install -e .
 ```
 
-如果要使用运动学、动力学、末端位姿控制等 Pinocchio 功能：
+如需 teleop IK（geom_arx）：
 
 ```bash
-python -m pip install -e ".[dynamics]"
+python -m pip install -e ".[kinematics]"
 ```
 
 如果 `motorbridge` 不是从 PyPI 安装的，需要先按你们内部方式安装
@@ -102,9 +104,7 @@ finally:
     arm.close(disable=True)
 ```
 
-## 配置
-
-默认硬件配置在 `config/arx_d_can_dm.yaml`。如果同事的串口、电机 ID、反馈 ID
+默认硬件配置在 `arx_d_can/config/arx_d_can_dm.yaml`。如果同事的串口、电机 ID、反馈 ID
 或控制增益不同，先改这个文件再运行。
 
 写零点命令会修改电机零位，只有机械臂已经摆到确认的零位时再执行：

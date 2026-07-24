@@ -16,12 +16,11 @@ NUM_ARM_JOINTS = 6
 DEFAULT_BACKEND = "cpp"
 DEFAULT_IK_KWARGS = {
     "method": "dls",
-    "max_iters": 200,
-    "pos_tol": 1e-3,
-    "ori_tol": 8e-3,
+    "max_iters": 5000,
+    "pos_tol": 1e-2,
+    "ori_tol": 1e-2,
     "use_analytic_jacobian": True,
-    "num_initial_guesses": 3,
-    "initial_guess_strategy": "random",
+    "num_initial_guesses": 10,
 }
 
 
@@ -106,6 +105,15 @@ class IkSolver:
         )
 
 
+def _ik_success(result: Any) -> bool:
+    if not isinstance(result, dict):
+        return False
+    ok = result.get("success", False)
+    if isinstance(ok, list):
+        ok = ok[0] if ok else False
+    return bool(ok)
+
+
 def solve_ik(
     position: Any,
     rotation: Any,
@@ -120,17 +128,49 @@ def solve_ik(
     """Solve IK from position (3,) and rotation (3, 3). Returns joint rad or None."""
     q0 = _chain_q_from_arm_joints(model, q_seed)
     target = _make_target_matrix(position, rotation)
-    kwargs = {**(ik_kwargs or DEFAULT_IK_KWARGS)}
+    kwargs = {**DEFAULT_IK_KWARGS, **(ik_kwargs or {})}
     method = str(kwargs.pop("method", "dls"))
-    result = inverse_kinematics(
+    kwargs.pop("initial_guess_strategy", None)
+    use_analytic_jacobian = bool(kwargs.pop("use_analytic_jacobian", True))
+    max_iters = int(kwargs.pop("max_iters", 5000))
+    num_initial_guesses = int(kwargs.pop("num_initial_guesses", 10))
+    pos_tol_current = float(kwargs.pop("pos_tol", 1e-1))
+    ori_tol_current = float(kwargs.pop("ori_tol", 1e-1))
+    pos_tol_random = float(kwargs.pop("pos_tol_random", 1e-2))
+    ori_tol_random = float(kwargs.pop("ori_tol_random", 1e-2))
+
+    solver_common = {
+        "method": method,
+        "backend": backend,
+        "use_analytic_jacobian": use_analytic_jacobian,
+        "max_iters": max_iters,
+        "num_initial_guesses": num_initial_guesses,
+        **kwargs,
+    }
+
+    # Stage 1: seed from current joints ("current" strategy via q0).
+    ik = inverse_kinematics(
         model,
         target,
         q0,
-        method=method,
-        backend=backend,
-        **kwargs,
+        initial_guess_strategy="random",
+        pos_tol=pos_tol_current,
+        ori_tol=ori_tol_current,
+        **solver_common,
     )
-    if not isinstance(result, dict) or not result.get("success", False):
+    if not _ik_success(ik):
+        # Stage 2: random initial guesses without a seed.
+        ik = inverse_kinematics(
+            model,
+            target,
+            None,
+            initial_guess_strategy="random",
+            pos_tol=pos_tol_random,
+            ori_tol=ori_tol_random,
+            **solver_common,
+        )
+
+    if not _ik_success(ik):
         pos = np.asarray(position, dtype=np.float64).reshape(3)
         quat = ScipyRotation.from_matrix(
             np.asarray(rotation, dtype=np.float64).reshape(3, 3)
@@ -138,28 +178,5 @@ def solve_ik(
         print("position", pos)
         print("quaternion", quat)
         return None
-    q = to_numpy(result["q"]).reshape(-1)
+    q = to_numpy(ik["q"]).reshape(-1)
     return q[:NUM_ARM_JOINTS].tolist()
-
-
-def solve_slave_ik(robot, position, rotation) -> list[float] | None:
-    """Solve IK for an ARX-D-CAN slave robot wrapper."""
-    model = getattr(robot, "robot_model", None)
-    if model is None:
-        return None
-
-    q0 = robot.get_ik_seed_joints() if hasattr(robot, "get_ik_seed_joints") else robot.get_robot_state("joint")
-    if q0 is None:
-        return None
-
-    ik = getattr(robot, "_ik", None)
-    return solve_ik(
-        position,
-        rotation,
-        q_seed=q0,
-        model=model,
-        base_link=getattr(ik, "base_link", "base_link"),
-        end_link=getattr(ik, "end_link", "tool0"),
-        backend=getattr(ik, "_backend", DEFAULT_BACKEND),
-        ik_kwargs=getattr(ik, "_ik_kwargs", DEFAULT_IK_KWARGS),
-    )

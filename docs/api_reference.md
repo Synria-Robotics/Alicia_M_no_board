@@ -34,5 +34,5 @@ arm.close()
 | `arx_d_can.api` | `ArxDCanRobot`, teleop helpers |
 | `arx_d_can.hardware` | Bus, `JointGroup`, `ArxDCanArm` |
 | `arx_d_can.execution` | Joint streaming + interpolation |
-| `arx_d_can.kinematics` | RoboCore IK/FK (`solve_slave_ik`) |
+| `arx_d_can.kinematics` | RoboCore IK/FK (`IkSolver`, `solve_ik`) |
 | `arx_d_can.utils` | Gripper + motion profiles |
