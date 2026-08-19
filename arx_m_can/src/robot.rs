@@ -1,0 +1,478 @@
+use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::{Duration, Instant};
+
+use crate::config::default_config;
+use crate::control_loop::CommandRefreshLoop;
+use crate::dynamics::{GravityCompConfig, GravityCompensator};
+use crate::error::{ArxError, Result};
+use crate::hardware::ArxMCanArm;
+use crate::trajectory::governor::{ReferenceGovernor, DEFAULT_TORQUE_MARGIN};
+use crate::trajectory::{build_trajectory_limits_from_vlim, needs_trajectory};
+use crate::types::{ArxMCanState, MotorDiagnostic, VlimInput};
+use crate::utils::gripper::validate_gripper_value;
+use crate::utils::speed_mapping::speed_to_vlim_rad_s;
+
+pub const NUM_ARM_JOINTS: usize = 6;
+pub const DEFAULT_PORT: &str = "/dev/ttyACM0";
+pub const DEFAULT_BAUD: u32 = 1_000_000;
+pub const DEFAULT_CONTROL_HZ: f64 = 100.0;
+pub const DEFAULT_MIT_CONTROL_HZ: f64 = 500.0;
+pub const DEFAULT_ARM_CONTROL_MODE: &str = "mit";
+pub const DEFAULT_MAX_JOINT_VEL_RAD_S: f64 = 3.0;
+pub const DEFAULT_JOINT_SPEED: f64 = 400.0;
+pub const DEFAULT_GRIPPER_SPEED: f64 = 100.0;
+pub const DEFAULT_WAIT_TOLERANCE_RAD: f64 = 0.02;
+pub const DEFAULT_WAIT_TIMEOUT_SEC: f64 = 15.0;
+pub const HOME_JOINTS: [f64; NUM_ARM_JOINTS] = [0.0; NUM_ARM_JOINTS];
+
+fn arm_max_vlim_rad_s(arm: &ArxMCanArm) -> f64 {
+    arm.config()
+        .arm_joints
+        .iter()
+        .filter_map(|joint| (joint.pv_vlim > 0.0).then_some(joint.pv_vlim))
+        .reduce(f64::min)
+        .unwrap_or(DEFAULT_MAX_JOINT_VEL_RAD_S)
+}
+
+fn normalize_mode(mode: &str) -> String {
+    mode.trim().to_ascii_lowercase().replace('_', "")
+}
+
+fn lock_arm(arm: &Arc<Mutex<ArxMCanArm>>) -> Result<std::sync::MutexGuard<'_, ArxMCanArm>> {
+    arm.lock()
+        .map_err(|_| ArxError::Runtime("arm mutex poisoned".into()))
+}
+
+/// Wait without retaining the arm mutex between polls.
+///
+/// The MIT refresh thread needs this same mutex on every control tick.
+fn wait_until_at_target(
+    arm: &Arc<Mutex<ArxMCanArm>>,
+    target: &[f64],
+    tolerance: f64,
+    timeout: f64,
+    poll_interval: f64,
+) -> Result<bool> {
+    let deadline = Instant::now() + Duration::from_secs_f64(timeout.max(0.0));
+    while Instant::now() < deadline {
+        let at_target = {
+            let guard = lock_arm(arm)?;
+            let state = guard.read_state(false)?;
+            state.arm.positions.len() >= target.len()
+                && target
+                    .iter()
+                    .zip(state.arm.positions.iter())
+                    .all(|(target, measured)| (target - measured).abs() <= tolerance)
+        };
+        if at_target {
+            return Ok(true);
+        }
+        thread::sleep(Duration::from_secs_f64(poll_interval.max(0.001)));
+    }
+    Ok(false)
+}
+
+pub struct ArxMCanRobot {
+    control_hz: f64,
+    wait_tolerance_rad: f64,
+    wait_timeout_sec: f64,
+    arm_control_mode: String,
+    arm: Arc<Mutex<ArxMCanArm>>,
+    refresh: Option<CommandRefreshLoop>,
+    gravity: Option<Arc<Mutex<GravityCompensator>>>,
+    enabled: bool,
+    max_joint_vel_rad_s: f64,
+    mit_mode: bool,
+    commanded_joints: Vec<f64>,
+    command_vlim: f64,
+}
+
+impl ArxMCanRobot {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        port: &str,
+        baud: u32,
+        control_hz: f64,
+        max_joint_vel_rad_s: Option<f64>,
+        wait_tolerance_rad: f64,
+        wait_timeout_sec: f64,
+        auto_enable: bool,
+        preserve_enable_state: bool,
+        arm_control_mode: Option<&str>,
+        gravity_config: Option<GravityCompConfig>,
+    ) -> Result<Self> {
+        let mode = arm_control_mode.unwrap_or(DEFAULT_ARM_CONTROL_MODE);
+        let mut gravity_cfg = gravity_config.unwrap_or_default();
+        let mit_mode = normalize_mode(mode) == "mit";
+        if gravity_cfg.enabled && !mit_mode {
+            return Err(ArxError::InvalidArgument(
+                "gravity feedforward requires arm_control_mode='mit'".into(),
+            ));
+        }
+        let effective_hz = if gravity_cfg.enabled {
+            control_hz.max(DEFAULT_MIT_CONTROL_HZ)
+        } else {
+            control_hz
+        };
+
+        let mut arm = ArxMCanArm::new(
+            default_config(Some(port), Some(baud), effective_hz, mode)?,
+            true,
+        )?;
+        arm.connect()?;
+        arm.configure(None)?;
+
+        let max_joint_vel_rad_s = max_joint_vel_rad_s
+            .filter(|value| *value > 0.0)
+            .unwrap_or_else(|| arm_max_vlim_rad_s(&arm));
+        let arm = Arc::new(Mutex::new(arm));
+        let q0 = read_joint_feedback(&arm)?;
+        let control_hz = effective_hz.max(1.0);
+
+        let gravity = if gravity_cfg.enabled {
+            gravity_cfg.enabled = true;
+            Some(Arc::new(Mutex::new(GravityCompensator::from_config(
+                &gravity_cfg,
+                NUM_ARM_JOINTS,
+            )?)))
+        } else {
+            None
+        };
+
+        let mut robot = Self {
+            control_hz,
+            wait_tolerance_rad,
+            wait_timeout_sec,
+            arm_control_mode: mode.to_string(),
+            arm: arm.clone(),
+            refresh: None,
+            gravity,
+            enabled: false,
+            max_joint_vel_rad_s,
+            mit_mode,
+            commanded_joints: q0.clone(),
+            command_vlim: 0.0,
+        };
+
+        if preserve_enable_state {
+            lock_arm(&robot.arm)?.adopt_enabled(true);
+            robot.enabled = true;
+            robot.hold_current_position()?;
+            robot.start_refresh_loop()?;
+        } else if auto_enable {
+            lock_arm(&robot.arm)?.enable()?;
+            robot.enabled = true;
+            robot.hold_current_position()?;
+            robot.start_refresh_loop()?;
+        }
+        // auto_enable=false: leave hardware enable/mode unchanged (read-only / external control).
+
+        Ok(robot)
+    }
+
+    pub fn arm_control_mode(&self) -> &str {
+        &self.arm_control_mode
+    }
+
+    pub fn enabled(&self) -> bool {
+        self.enabled
+    }
+
+    pub fn enable(&mut self) -> Result<()> {
+        lock_arm(&self.arm)?.enable()?;
+        self.enabled = true;
+        self.hold_current_position()?;
+        self.start_refresh_loop()
+    }
+
+    pub fn disable(&mut self) -> Result<()> {
+        self.pause_refresh_loop();
+        lock_arm(&self.arm)?.disable()?;
+        self.enabled = false;
+        Ok(())
+    }
+
+    /// Read feedback and send once (arx_d_can_ref ``hold_current_position``).
+    pub fn hold_current_position(&mut self) -> Result<Vec<f64>> {
+        let joints = read_joint_feedback(&self.arm)?;
+        self.send_joints_direct(&joints, 0.0)?;
+        Ok(joints)
+    }
+
+    pub fn get_gripper_button_event(&self) -> Result<Option<u8>> {
+        lock_arm(&self.arm)?.get_gripper_button_event()
+    }
+
+    pub fn get_robot_state_joint(&self) -> Result<Vec<f64>> {
+        read_joint_feedback(&self.arm)
+    }
+
+    pub fn get_arm_state(&self, request_feedback: bool) -> Result<ArxMCanState> {
+        lock_arm(&self.arm)?.read_state(request_feedback)
+    }
+
+    pub fn get_motor_diagnostics(&self, request_feedback: bool) -> Result<Vec<MotorDiagnostic>> {
+        lock_arm(&self.arm)?.motor_diagnostics(request_feedback)
+    }
+
+    pub fn get_control_loop_stats(&self) -> (u64, u64) {
+        self.refresh
+            .as_ref()
+            .map_or((0, 0), CommandRefreshLoop::stats)
+    }
+
+    pub fn get_arm_mit_gains(&self) -> Result<(Vec<f64>, Vec<f64>)> {
+        lock_arm(&self.arm)?.get_arm_mit_gains()
+    }
+
+    pub fn set_arm_mit_gains(&mut self, kp: Option<Vec<f64>>, kd: Option<Vec<f64>>) -> Result<()> {
+        let mut guard = lock_arm(&self.arm)?;
+        guard.set_arm_mit_gains(kp.as_deref(), kd.as_deref())
+    }
+
+    pub fn get_ik_seed_joints(&self) -> Vec<f64> {
+        self.commanded_joints.clone()
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn set_robot_state(
+        &mut self,
+        target_joints: Option<&[f64]>,
+        gripper_value: Option<f64>,
+        speed: f64,
+        gripper_speed: f64,
+        wait_for_completion: bool,
+        joint_tolerance: Option<f64>,
+        converge_timeout: Option<f64>,
+        max_joint_accel_rad_s2: Option<f64>,
+        max_joint_jerk_rad_s3: Option<f64>,
+    ) -> Result<bool> {
+        let mut joints_converged = true;
+        if let Some(target) = target_joints {
+            let target: Vec<f64> = target.iter().take(NUM_ARM_JOINTS).copied().collect();
+            let vlim = self.vlim_from_speed(speed);
+            if vlim > 0.0 {
+                let tol = joint_tolerance.unwrap_or(self.wait_tolerance_rad);
+                let timeout = converge_timeout.unwrap_or(self.wait_timeout_sec);
+                joints_converged = self.move_arm_joints(
+                    &target,
+                    vlim,
+                    tol,
+                    timeout,
+                    wait_for_completion,
+                    max_joint_accel_rad_s2,
+                    max_joint_jerk_rad_s3,
+                )?;
+            }
+        }
+        if let Some(value) = gripper_value {
+            lock_arm(&self.arm)?.set_gripper(
+                validate_gripper_value(value),
+                gripper_speed,
+                Some(self.control_hz),
+                true,
+                wait_for_completion,
+                20.0,
+                5.0,
+            )?;
+        }
+        Ok(joints_converged)
+    }
+
+    pub fn set_gripper_target(
+        &mut self,
+        command: Option<&str>,
+        value: Option<f64>,
+        speed: f64,
+        wait_for_completion: bool,
+    ) -> Result<bool> {
+        let value = match (command, value) {
+            (Some("open"), _) => 1000.0,
+            (Some("close"), _) => 0.0,
+            (_, Some(value)) => value,
+            _ => {
+                return Err(ArxError::InvalidArgument(
+                    "set_gripper_target requires command='open'|'close' or value=[0,1000]"
+                        .into(),
+                ));
+            }
+        };
+        lock_arm(&self.arm)?.set_gripper(
+            validate_gripper_value(value),
+            speed,
+            Some(self.control_hz),
+            true,
+            wait_for_completion,
+            20.0,
+            5.0,
+        )
+    }
+
+    pub fn go_home(&mut self, speed: f64) -> Result<()> {
+        self.set_robot_state(
+            Some(&HOME_JOINTS),
+            None,
+            speed,
+            DEFAULT_GRIPPER_SPEED,
+            true,
+            None,
+            None,
+            None,
+            None,
+        )?;
+        Ok(())
+    }
+
+    pub fn disconnect(&mut self) -> Result<()> {
+        // if self.mit_mode && self.enabled && lock_arm(&self.arm)?.connected() {
+        //     let _ = self.go_home(60.0);
+        // }
+        if let Some(ref mut refresh) = self.refresh {
+            refresh.stop();
+        }
+        self.refresh = None;
+        lock_arm(&self.arm)?.close(false)
+    }
+
+    fn move_arm_joints(
+        &mut self,
+        target: &[f64],
+        vlim: f64,
+        tolerance: f64,
+        timeout: f64,
+        wait_for_completion: bool,
+        max_joint_accel_rad_s2: Option<f64>,
+        max_joint_jerk_rad_s3: Option<f64>,
+    ) -> Result<bool> {
+        let state = lock_arm(&self.arm)?.read_state(true)?;
+        let q_meas: Vec<f64> = state.arm.positions.iter().take(NUM_ARM_JOINTS).copied().collect();
+        let dq_meas: Vec<f64> = state
+            .arm
+            .velocities
+            .iter()
+            .take(NUM_ARM_JOINTS)
+            .copied()
+            .collect();
+
+        if !needs_trajectory(&q_meas, target, tolerance) {
+            self.send_joints_direct(target, vlim)?;
+            return Ok(true);
+        }
+
+        if self.mit_mode && self.refresh.is_some() {
+            let joint_cfgs = lock_arm(&self.arm)?.config().arm_joints.clone();
+            let limits = build_trajectory_limits_from_vlim(
+                NUM_ARM_JOINTS,
+                vlim,
+                &joint_cfgs,
+                max_joint_accel_rad_s2,
+                max_joint_jerk_rad_s3,
+            );
+            let refresh = self.refresh.as_ref().expect("refresh loop");
+            refresh.start_trajectory(&q_meas, target, &dq_meas, &limits, vlim)?;
+            self.commanded_joints = target.to_vec();
+            self.command_vlim = vlim;
+            if wait_for_completion {
+                return wait_until_at_target(&self.arm, target, tolerance, timeout, 0.01);
+            }
+            Ok(true)
+        } else {
+            self.send_joints_direct(target, vlim)?;
+            if wait_for_completion {
+                wait_until_at_target(&self.arm, target, tolerance, timeout, 0.01)
+            } else {
+                Ok(true)
+            }
+        }
+    }
+
+    fn start_refresh_loop(&mut self) -> Result<()> {
+        if self.refresh.is_some() {
+            self.resume_refresh_loop();
+            return Ok(());
+        }
+        let joint_cfgs = lock_arm(&self.arm)?.config().arm_joints.clone();
+        let governor = if self.mit_mode {
+            Some(ReferenceGovernor::from_joint_configs(
+                &joint_cfgs,
+                DEFAULT_TORQUE_MARGIN,
+            ))
+        } else {
+            None
+        };
+        let refresh = CommandRefreshLoop::new(
+            self.arm.clone(),
+            self.control_hz,
+            self.mit_mode,
+            self.commanded_joints.clone(),
+            self.command_vlim,
+            self.gravity.clone(),
+            governor,
+        );
+        refresh.resume();
+        self.refresh = Some(refresh);
+        Ok(())
+    }
+
+    fn pause_refresh_loop(&mut self) {
+        if let Some(ref refresh) = self.refresh {
+            refresh.pause();
+        }
+    }
+
+    fn resume_refresh_loop(&mut self) {
+        if let Some(ref refresh) = self.refresh {
+            refresh.set_hold(self.commanded_joints.clone(), self.command_vlim);
+            refresh.resume();
+        }
+    }
+
+    fn vlim_from_speed(&self, speed: f64) -> f64 {
+        speed_to_vlim_rad_s(speed, self.max_joint_vel_rad_s)
+    }
+
+    fn send_joints_direct(&mut self, positions: &[f64], vlim: f64) -> Result<()> {
+        if self.mit_mode {
+            if let Some(ref refresh) = self.refresh {
+                refresh.set_hold(positions.to_vec(), vlim);
+            } else {
+                lock_arm(&self.arm)?.send_arm_command(
+                    positions,
+                    Some(&vec![0.0; positions.len()]),
+                    Some(VlimInput::Scalar(vlim)),
+                    true,
+                    None,
+                )?;
+            }
+        } else {
+            lock_arm(&self.arm)?.send_arm_command(
+                positions,
+                None,
+                Some(VlimInput::Scalar(vlim)),
+                true,
+                None,
+            )?;
+        }
+        self.commanded_joints = positions.to_vec();
+        self.command_vlim = vlim;
+        Ok(())
+    }
+}
+
+impl Drop for ArxMCanRobot {
+    fn drop(&mut self) {
+        let _ = self.disconnect();
+    }
+}
+
+fn read_joint_feedback(arm: &Arc<Mutex<ArxMCanArm>>) -> Result<Vec<f64>> {
+    let guard = lock_arm(arm)?;
+    let state = guard.read_state(true)?;
+    Ok(state
+        .arm
+        .positions
+        .into_iter()
+        .take(NUM_ARM_JOINTS)
+        .collect())
+}

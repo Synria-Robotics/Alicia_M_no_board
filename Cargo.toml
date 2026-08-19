@@ -1,0 +1,9 @@
+[workspace]
+members = ["arx_m_can", "arx_m_can_py"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Rust ARX robot SDK for Damiao motors over USB2CAN (motorbridge)"

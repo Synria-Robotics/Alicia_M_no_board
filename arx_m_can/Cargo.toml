@@ -1,0 +1,24 @@
+[package]
+name = "arx_m_can"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Rust ARX robot SDK for Damiao motors over USB2CAN (motorbridge)"
+readme = "../README.md"
+
+[lib]
+name = "arx_m_can"
+path = "src/lib.rs"
+
+[dependencies]
+motor_core = { path = "../../motorbridge/motor_core" }
+motor_vendor_damiao = { path = "../../motorbridge/motor_vendors/damiao" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+thiserror = "2"
+robocore_dynamics_ffi = { path = "../../robocore_dynamics_ffi" }
+ruckig = "0.19"
+ureq = { version = "2", default-features = false, features = ["json"] }
+
+[dev-dependencies]

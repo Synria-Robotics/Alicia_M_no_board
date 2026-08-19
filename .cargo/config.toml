@@ -1,0 +1,5 @@
+# PyO3 build scripts need a real Python interpreter at compile time.
+# Without this, a broken/stale VIRTUAL_ENV can make PyO3 look for `bin/python`
+# relative to the project and fail with "No such file or directory".
+[env]
+PYO3_PYTHON = "/usr/bin/python3"
