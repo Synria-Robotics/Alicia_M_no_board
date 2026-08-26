@@ -255,7 +255,7 @@ impl Drop for CommandRefreshLoop {
     }
 }
 
-fn compute_gravity_ff(
+pub(crate) fn compute_gravity_ff(
     arm: &ArxMCanArm,
     gravity: Option<&Arc<Mutex<GravityCompensator>>>,
     target_joints: &[f64],

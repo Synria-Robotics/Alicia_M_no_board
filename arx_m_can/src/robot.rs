@@ -1,9 +1,10 @@
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::config::default_config;
-use crate::control_loop::CommandRefreshLoop;
+use crate::control_loop::{compute_gravity_ff, CommandRefreshLoop};
 use crate::dynamics::{GravityCompConfig, GravityCompensator};
 use crate::error::{ArxError, Result};
 use crate::hardware::ArxMCanArm;
@@ -25,6 +26,10 @@ pub const DEFAULT_GRIPPER_SPEED: f64 = 100.0;
 pub const DEFAULT_WAIT_TOLERANCE_RAD: f64 = 0.02;
 pub const DEFAULT_WAIT_TIMEOUT_SEC: f64 = 15.0;
 pub const HOME_JOINTS: [f64; NUM_ARM_JOINTS] = [0.0; NUM_ARM_JOINTS];
+
+/// MIT frames sent immediately after enable, before the refresh thread's first tick.
+const STARTUP_BURST_FRAMES: u32 = 8;
+const STARTUP_BURST_PERIOD: Duration = Duration::from_millis(2);
 
 fn arm_max_vlim_rad_s(arm: &ArxMCanArm) -> f64 {
     arm.config()
@@ -100,6 +105,7 @@ impl ArxMCanRobot {
         auto_enable: bool,
         preserve_enable_state: bool,
         arm_control_mode: Option<&str>,
+        hw_yaml: Option<&Path>,
         gravity_config: Option<GravityCompConfig>,
     ) -> Result<Self> {
         let mode = arm_control_mode.unwrap_or(DEFAULT_ARM_CONTROL_MODE);
@@ -117,11 +123,10 @@ impl ArxMCanRobot {
         };
 
         let mut arm = ArxMCanArm::new(
-            default_config(Some(port), Some(baud), effective_hz, mode)?,
+            default_config(Some(port), Some(baud), effective_hz, mode, hw_yaml)?,
             true,
         )?;
         arm.connect()?;
-        arm.configure(None)?;
 
         let max_joint_vel_rad_s = max_joint_vel_rad_s
             .filter(|value| *value > 0.0)
@@ -155,16 +160,34 @@ impl ArxMCanRobot {
             command_vlim: 0.0,
         };
 
-        if preserve_enable_state {
-            lock_arm(&robot.arm)?.adopt_enabled(true);
-            robot.enabled = true;
-            robot.hold_current_position()?;
-            robot.start_refresh_loop()?;
-        } else if auto_enable {
-            lock_arm(&robot.arm)?.enable()?;
-            robot.enabled = true;
-            robot.hold_current_position()?;
-            robot.start_refresh_loop()?;
+        if preserve_enable_state || auto_enable {
+            let preserve = preserve_enable_state || {
+                lock_arm(&robot.arm)?
+                    .detect_hardware_preserve(mode)
+                    .unwrap_or(false)
+            };
+
+            // Adopt software enabled state before MIT sends (prewarm uses require_enabled).
+            if lock_arm(&robot.arm)?.hardware_all_enabled()? {
+                lock_arm(&robot.arm)?.adopt_enabled(true);
+            }
+
+            robot.prewarm_if_enabled()?;
+
+            {
+                let mut guard = lock_arm(&robot.arm)?;
+                guard.prepare_for_control(Some(mode), preserve)?;
+                if !guard.enabled() {
+                    guard.enable_if_needed()?;
+                }
+                robot.enabled = guard.enabled();
+            }
+
+            if robot.enabled {
+                robot.startup_mit_hold()?;
+            }
+        } else {
+            lock_arm(&robot.arm)?.configure(None)?;
         }
         // auto_enable=false: leave hardware enable/mode unchanged (read-only / external control).
 
@@ -180,10 +203,15 @@ impl ArxMCanRobot {
     }
 
     pub fn enable(&mut self) -> Result<()> {
-        lock_arm(&self.arm)?.enable()?;
-        self.enabled = true;
-        self.hold_current_position()?;
-        self.start_refresh_loop()
+        {
+            let mut guard = lock_arm(&self.arm)?;
+            guard.enable_if_needed()?;
+            self.enabled = guard.enabled();
+        }
+        if self.enabled {
+            self.startup_mit_hold()?;
+        }
+        Ok(())
     }
 
     pub fn disable(&mut self) -> Result<()> {
@@ -432,17 +460,54 @@ impl ArxMCanRobot {
         speed_to_vlim_rad_s(speed, self.max_joint_vel_rad_s)
     }
 
+    /// Send a few MIT+gravity frames immediately when hardware is already enabled.
+    fn prewarm_if_enabled(&mut self) -> Result<()> {
+        if !self.mit_mode || self.gravity.is_none() {
+            return Ok(());
+        }
+        if !lock_arm(&self.arm)?.hardware_all_enabled()? {
+            return Ok(());
+        }
+        let joints = read_joint_feedback(&self.arm)?;
+        for _ in 0..3 {
+            self.send_joints_direct(&joints, 0.0)?;
+            thread::sleep(STARTUP_BURST_PERIOD);
+        }
+        Ok(())
+    }
+
+    /// Hold current pose with gravity FF, then start the refresh loop.
+    ///
+    /// Sends several MIT frames before the background thread starts so the arm
+    /// does not sag after enable (mode switch leaves kp=0/kd=0/tau=0 as the last
+    /// command until gravity FF arrives).
+    fn startup_mit_hold(&mut self) -> Result<()> {
+        let joints = read_joint_feedback(&self.arm)?;
+        for _ in 0..STARTUP_BURST_FRAMES {
+            self.send_joints_direct(&joints, 0.0)?;
+            thread::sleep(STARTUP_BURST_PERIOD);
+        }
+        self.start_refresh_loop()
+    }
+
+    fn gravity_ff_for(&self, joints: &[f64]) -> Option<Vec<f64>> {
+        let guard = lock_arm(&self.arm).ok()?;
+        compute_gravity_ff(&guard, self.gravity.as_ref(), joints)
+    }
+
     fn send_joints_direct(&mut self, positions: &[f64], vlim: f64) -> Result<()> {
         if self.mit_mode {
             if let Some(ref refresh) = self.refresh {
                 refresh.set_hold(positions.to_vec(), vlim);
             } else {
+                let zeros = vec![0.0; positions.len()];
+                let tau_ff = self.gravity_ff_for(positions);
                 lock_arm(&self.arm)?.send_arm_command(
                     positions,
-                    Some(&vec![0.0; positions.len()]),
+                    Some(&zeros),
                     Some(VlimInput::Scalar(vlim)),
                     true,
-                    None,
+                    tau_ff.as_deref(),
                 )?;
             }
         } else {

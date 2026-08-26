@@ -79,6 +79,8 @@ class SynriaRobotAPI:
         wait_timeout_sec: float = DEFAULT_WAIT_TIMEOUT_SEC,
         use_gravity_ff: bool = True,
         gravity_joint_scales: Sequence[float] | None = None,
+        gravity_model_path: str | Path | None = None,
+        config_path: str | Path | None = None,
         urdf_path: str | Path = DEFAULT_URDF,
         base_link: str = DEFAULT_BASE_LINK,
         end_link: str = DEFAULT_END_LINK,
@@ -96,17 +98,22 @@ class SynriaRobotAPI:
         scales = list(gravity_joint_scales) if gravity_joint_scales is not None else None
         if use_gravity_ff and scales is None:
             scales = _load_gravity_scales()
-        self._robot = _native.Robot(
-            port=port,
-            baud=self._baud,
-            control_hz=self._control_hz,
-            auto_enable=auto_enable,
-            arm_control_mode=self._arm_control_mode,
-            wait_tolerance_rad=self._wait_tolerance_rad,
-            wait_timeout_sec=self._wait_timeout_sec,
-            use_gravity_ff=use_gravity_ff,
-            gravity_joint_scales=scales,
-        )
+        robot_kwargs: dict[str, Any] = {
+            "port": port,
+            "baud": self._baud,
+            "control_hz": self._control_hz,
+            "auto_enable": auto_enable,
+            "arm_control_mode": self._arm_control_mode,
+            "wait_tolerance_rad": self._wait_tolerance_rad,
+            "wait_timeout_sec": self._wait_timeout_sec,
+            "use_gravity_ff": use_gravity_ff,
+            "gravity_joint_scales": scales,
+        }
+        if gravity_model_path is not None:
+            robot_kwargs["gravity_model_path"] = str(gravity_model_path)
+        if config_path is not None:
+            robot_kwargs["config_path"] = str(config_path)
+        self._robot = _native.Robot(**robot_kwargs)
 
     @property
     def arm_control_mode(self) -> str:
@@ -434,6 +441,8 @@ def create_robot(
     wait_timeout_sec: float = DEFAULT_WAIT_TIMEOUT_SEC,
     use_gravity_ff: bool = True,
     gravity_joint_scales: Sequence[float] | None = None,
+    gravity_model_path: str | Path | None = None,
+    config_path: str | Path | None = None,
     urdf_path: str | Path = DEFAULT_URDF,
     base_link: str = DEFAULT_BASE_LINK,
     end_link: str = DEFAULT_END_LINK,
@@ -449,6 +458,8 @@ def create_robot(
         wait_timeout_sec=wait_timeout_sec,
         use_gravity_ff=use_gravity_ff,
         gravity_joint_scales=gravity_joint_scales,
+        gravity_model_path=gravity_model_path,
+        config_path=config_path,
         urdf_path=urdf_path,
         base_link=base_link,
         end_link=end_link,

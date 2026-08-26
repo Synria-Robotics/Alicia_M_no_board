@@ -1,5 +1,6 @@
 # Per-joint gravity feedforward scales (MIT tau_ff = scale[i] * g(q)[i]).
 # Tune distal-first: joint6 → joint1.
+# Profile: px6d (Alicia M + PX6D end effector)
 
 urdf: /home/ubuntu/Alicia/Synria-Robot-Descriptions/synriard/urdf/Alicia_M_v1_2/Alicia_M_v1_2_follower_ARX_PX6D.urdf
 base_link: base_link
@@ -14,5 +15,6 @@ joint_scales:
   - 1.0000  # joint6 / link6 (+ merged link7/8/tool0)
 
 notes: >
-  Re-export JSON after URDF edits; maturin develop --release.
-  Float test: arx_m_can_dm.yaml (kp=0, kd=1).
+  Edit joint_scales in this file per profile.
+  Re-export JSON after URDF edits: python scripts/export_dynamics_model.py --robot px6d
+  Float test uses arx_m_can_dm_float.yaml (kp=0, kd=1).

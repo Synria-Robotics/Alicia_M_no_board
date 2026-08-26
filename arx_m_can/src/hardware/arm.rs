@@ -41,7 +41,7 @@ impl ArxMCanArm {
         enable_gripper: bool,
     ) -> Result<Self> {
         Self::new(
-            default_config(port, baud, 100.0, control_mode)?,
+            default_config(port, baud, 100.0, control_mode, None)?,
             enable_gripper,
         )
     }
@@ -71,7 +71,11 @@ impl ArxMCanArm {
     }
 
     pub fn connect(&mut self) -> Result<()> {
-        let mut robot = ArxMCan::new(Some(&self.config.port), Some(self.config.baud), None)?;
+        let mut robot = ArxMCan::new(
+            Some(&self.config.port),
+            Some(self.config.baud),
+            self.config.hw_yaml.as_deref(),
+        )?;
         robot.connect()?;
         self.robot = Some(robot);
         self.connected = true;
@@ -79,16 +83,64 @@ impl ArxMCanArm {
     }
 
     pub fn configure(&mut self, mode: Option<&str>) -> Result<()> {
+        self.prepare_for_control(mode, false)
+    }
+
+    /// Connect, optionally preserving an already-enabled MIT hardware state.
+    pub fn prepare_for_control(
+        &mut self,
+        mode: Option<&str>,
+        preserve_hardware: bool,
+    ) -> Result<()> {
         self.require_connected()?;
         let mode_str = mode
             .map(normalize_mode)
             .unwrap_or_else(|| self.mode.clone());
+        let robot = self.robot.as_mut().ok_or(ArxError::NotConnected)?;
+        robot.request_all_feedback()?;
+
+        if preserve_hardware && normalize_mode(&mode_str) == "mit" {
+            self.mode = "mit".to_string();
+            robot.arm_mut()?.adopt_mode_mit();
+            if self.enable_gripper && self.config.gripper.is_some() {
+                if let Ok(gripper) = robot.gripper_mut() {
+                    gripper.adopt_mode_mit();
+                }
+            }
+            return Ok(());
+        }
+
         self.configure_mode(&mode_str)?;
         if self.enable_gripper && self.config.gripper.is_some() {
             let robot = self.robot.as_mut().ok_or(ArxError::NotConnected)?;
-            robot.gripper_mut()?.mode_mit()?;
+            robot.gripper_mut()?.ensure_mit_mode()?;
         }
         Ok(())
+    }
+
+    pub fn detect_hardware_preserve(&self, mode: &str) -> Result<bool> {
+        if normalize_mode(mode) != "mit" {
+            return Ok(false);
+        }
+        let robot = self.robot.as_ref().ok_or(ArxError::NotConnected)?;
+        robot.arm_hardware_ready(true)
+    }
+
+    pub fn enable_if_needed(&mut self) -> Result<()> {
+        self.require_connected()?;
+        let robot = self.robot.as_ref().ok_or(ArxError::NotConnected)?;
+        robot.enable_selective()?;
+        self.enabled = robot.arm()?.all_motors_enabled();
+        Ok(())
+    }
+
+    pub fn hardware_all_enabled(&self) -> Result<bool> {
+        Ok(self
+            .robot
+            .as_ref()
+            .ok_or(ArxError::NotConnected)?
+            .arm()?
+            .all_motors_enabled())
     }
 
     pub fn close(&mut self, disable: bool) -> Result<()> {
@@ -107,11 +159,8 @@ impl ArxMCanArm {
     pub fn enable(&mut self) -> Result<()> {
         self.require_connected()?;
         let robot = self.robot.as_mut().ok_or(ArxError::NotConnected)?;
-        robot.arm_mut()?.enable()?;
-        if self.enable_gripper && self.config.gripper.is_some() {
-            robot.gripper_mut()?.enable()?;
-        }
-        self.enabled = true;
+        robot.enable_selective()?;
+        self.enabled = robot.arm()?.all_motors_enabled();
         Ok(())
     }
 
@@ -149,7 +198,7 @@ impl ArxMCanArm {
                 self.mode = "posvel".to_string();
             }
             "mit" => {
-                robot.arm_mut()?.mode_mit()?;
+                robot.arm_mut()?.ensure_mit_mode()?;
                 self.mode = "mit".to_string();
             }
             _ => {

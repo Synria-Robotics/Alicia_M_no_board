@@ -19,6 +19,10 @@ Run in ``arx`` conda env with the arm manually placed at a representative hold p
     # J6 at calibration ref:
     python examples/13_mit_gain_autotune.py tune --focus-joint 6 --goto-ref-pose --write-yaml
 
+    # Follower arm
+    python examples/13_mit_gain_autotune.py --robot follower tune --focus-joint 1 --mode step --write-yaml
+    python examples/13_mit_gain_autotune.py --robot follower tune --write-yaml
+
 Heuristic from metrics:
   - high RMSE pos, low RMSE vel → Kp too low
   - high RMSE vel / oscillation   → Kd too low or Kp too high
@@ -38,10 +42,19 @@ from pathlib import Path
 
 import yaml
 
+from common import (
+    add_robot_arguments,
+    ensure_native_path,
+    resolve_robot_setup,
+    robot_gravity_kwargs,
+)
+
+ensure_native_path()
+
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_ORIGIN = ROOT / "arx_m_can" / "config" / "arx_m_can_dm_origin.yaml"
-DEFAULT_DM = ROOT / "arx_m_can" / "config" / "arx_m_can_dm.yaml"
-DEFAULT_SCALES = ROOT / "arx_m_can" / "config" / "gravity_joint_scales.yaml"
+DEFAULT_DM = ROOT / "arx_m_can" / "config" / "profiles" / "px6d" / "arx_m_can_dm.yaml"
+DEFAULT_SCALES = ROOT / "arx_m_can" / "config" / "profiles" / "px6d" / "gravity_joint_scales.yaml"
 DEFAULT_POSES = Path(
     "/home/ubuntu/Synria/geom_arx/src/calibration/config/poses_slave.yaml"
 )
@@ -145,8 +158,6 @@ def joint_tune_order(order: str, focus_joint: int | None) -> list[int]:
 
 
 def _import_native():
-    if str(ROOT) not in sys.path:
-        sys.path.insert(0, str(ROOT))
     try:
         import _native
     except ImportError as exc:
@@ -154,6 +165,24 @@ def _import_native():
             "Run: conda activate arx && maturin develop --release"
         ) from exc
     return _native
+
+
+def resolve_tune_paths(
+    args: argparse.Namespace, setup
+) -> tuple[Path, Path, Path]:
+    """Return (baseline_yaml, dm_yaml, scales_file) honoring --robot."""
+    from common import _import_profiles
+
+    baseline = Path(args.origin_yaml if args.from_origin else args.baseline_yaml)
+    dm = Path(args.dm_yaml)
+    scales = setup.scales_path
+    if setup.robot and not args.from_origin:
+        profile = _import_profiles().get_robot(setup.robot)
+        if baseline == DEFAULT_DM:
+            baseline = profile.dm_yaml
+        if dm == DEFAULT_DM:
+            dm = profile.dm_yaml
+    return baseline, dm, scales
 
 
 def evaluate_hold(
@@ -473,10 +502,20 @@ def write_dm_yaml(path: Path, kp: list[float], kd: list[float]) -> None:
 
 def cmd_tune(args: argparse.Namespace) -> int:
     native = _import_native()
-    scales = load_scales_yaml(Path(args.scales_file))
+    setup = resolve_robot_setup(args)
+    baseline_path, dm_path, scales_path = resolve_tune_paths(args, setup)
+    args.baseline_yaml = baseline_path
+    args.dm_yaml = dm_path
+    scales = load_scales_yaml(scales_path)
     kp_origin, kd_origin, baseline_path = resolve_baseline_gains(args)
 
     print(f"Baseline yaml: {baseline_path}")
+    if setup.robot:
+        print(f"robot={setup.robot}")
+    if setup.config_path:
+        print(f"config={setup.config_path.name}")
+    if setup.dynamics_model_path:
+        print(f"dynamics={setup.dynamics_model_path.name}")
     print("Baseline Kp:   ", [f"{v:.1f}" for v in kp_origin])
     print("Baseline Kd:   ", [f"{v:.1f}" for v in kd_origin])
     print("Gravity scales:", [f"{v:.3f}" for v in scales])
@@ -491,10 +530,7 @@ def cmd_tune(args: argparse.Namespace) -> int:
     robot = native.Robot(
         port=args.port,
         control_hz=native.DEFAULT_MIT_CONTROL_HZ,
-        arm_control_mode="mit",
-        use_gravity_ff=True,
-        gravity_joint_scales=scales,
-        auto_enable=True,
+        **robot_gravity_kwargs(setup),
     )
     try:
         robot.set_arm_mit_gains(kp_origin, kd_origin)
@@ -575,10 +611,10 @@ def cmd_apply(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--port", default=None)
+    add_robot_arguments(parser)
     parser.add_argument("--origin-yaml", type=Path, default=DEFAULT_ORIGIN, help="Factory defaults (use with --from-origin)")
     parser.add_argument("--baseline-yaml", type=Path, default=DEFAULT_DM, help="Starting kp/kd for tuning (default: current dm yaml)")
     parser.add_argument("--dm-yaml", type=Path, default=DEFAULT_DM, help="Output yaml for --write-yaml / apply")
-    parser.add_argument("--scales-file", type=Path, default=DEFAULT_SCALES)
     sub = parser.add_subparsers(dest="command", required=True)
 
     p = sub.add_parser("tune", help="Auto-tune Kd then Kp per joint")

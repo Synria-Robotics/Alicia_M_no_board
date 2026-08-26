@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
@@ -134,6 +134,8 @@ pub struct ArxMCanConfig {
     pub gripper_closed_value: f64,
     pub gripper_open_value: f64,
     pub gripper_button: Option<GripperButtonConfig>,
+    /// Resolved hardware YAML used to build this config (for reconnect / bus init).
+    pub hw_yaml: Option<PathBuf>,
 }
 
 impl ArxMCanConfig {
@@ -220,8 +222,10 @@ pub fn default_config(
     baud: Option<u32>,
     control_hz: f64,
     arm_control_mode: &str,
+    hw_yaml: Option<&Path>,
 ) -> Result<ArxMCanConfig> {
-    let data = load_cfg(None)?;
+    let hw_path = resolve_hw_cfg_path(hw_yaml)?;
+    let data = load_cfg(Some(&hw_path))?;
     let joints_by_name: HashMap<String, JointCfg> = data
         .joints
         .iter()
@@ -272,5 +276,6 @@ pub fn default_config(
         gripper_closed_value: data.gripper_mapping.closed_value,
         gripper_open_value: data.gripper_mapping.open_value,
         gripper_button: data.gripper_button,
+        hw_yaml: Some(hw_path),
     })
 }

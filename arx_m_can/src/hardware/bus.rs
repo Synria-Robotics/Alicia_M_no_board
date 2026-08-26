@@ -210,6 +210,45 @@ impl ArxMCan {
         }
     }
 
+    pub fn request_all_feedback(&self) -> Result<()> {
+        let controller = self
+            .controller
+            .as_ref()
+            .ok_or(ArxError::NotConnected)?;
+        for motor in self.motor_map.values() {
+            let _ = motor.request_motor_feedback();
+        }
+        wait_for_joint_feedback(controller, &self.motor_map, &self.cfg.joints);
+        Ok(())
+    }
+
+    pub fn arm_hardware_ready(&self, require_mit: bool) -> Result<bool> {
+        let arm = self.arm()?;
+        if !arm.all_motors_enabled() {
+            return Ok(false);
+        }
+        if require_mit && !arm.all_motors_mit_mode() {
+            return Ok(false);
+        }
+        Ok(true)
+    }
+
+    pub fn ensure_mit_mode(&mut self) -> Result<()> {
+        self.arm_mut()?.ensure_mit_mode()?;
+        if let Ok(gripper) = self.gripper_mut() {
+            gripper.ensure_mit_mode()?;
+        }
+        Ok(())
+    }
+
+    pub fn enable_selective(&self) -> Result<()> {
+        self.arm()?.enable_selective()?;
+        if let Ok(gripper) = self.gripper() {
+            gripper.enable_selective()?;
+        }
+        Ok(())
+    }
+
     pub fn set_zero(&self) -> Result<()> {
         for group in self.groups.values() {
             group.disable();

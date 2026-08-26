@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Distal-first gravity calibration for Alicia M + PX6D (link6 → link1).
+"""Distal-first gravity calibration (link6 → link1).
 
 Workflow (run in ``arx`` conda env)::
 
@@ -7,23 +7,16 @@ Workflow (run in ``arx`` conda env)::
     cd /home/ubuntu/Synria/arx/Rust/arx_m_can
     maturin develop --release
 
-    # 1) After URDF edits — refresh embedded model
+    # Follower arm — export model, then gravity-only float test
+    python examples/12_gravity_calibrate.py --robot follower export-model
+    python examples/12_gravity_calibrate.py --robot follower float-test --duration 30 --focus-joint 4
+
+    # PX6D (default robot when --robot omitted uses root config paths)
     python examples/12_gravity_calibrate.py export-model
-
-    # 2) Audit masses / merged link6
-    python examples/12_gravity_calibrate.py audit
-
-    # 3) Model-only gravity at calibration poses
-    python examples/12_gravity_calibrate.py model-g --focus-joint 6
-
-    # 4) Hardware float + torque sampling (kp=0, kd=1 — manually hold pose first)
     python examples/12_gravity_calibrate.py measure --focus-joint 4 --settle-sec 3 --sample-sec 10
     python examples/12_gravity_calibrate.py float-test --duration 15
 
-    # 5) Write tuned scales
-    python examples/12_gravity_calibrate.py write-scales 1.0 1.55 1.55 1.0 1.05 1.08
-
-Requires MIT mode config (kp=0, kd=1) for measurement. Manually move/hold the arm at the test pose.
+Requires float MIT config (kp=0) for measurement. Manually move/hold the arm at the test pose.
 """
 
 from __future__ import annotations
@@ -40,13 +33,21 @@ from typing import Any
 
 import numpy as np
 
+from common import (
+    DEFAULT_SCALES,
+    add_robot_arguments,
+    ensure_repo_path,
+    resolve_robot_setup,
+    robot_gravity_kwargs,
+    _import_profiles,
+)
+
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_URDF = Path(
     "/home/ubuntu/Alicia/Synria-Robot-Descriptions/synriard/urdf/Alicia_M_v1_2/"
     "Alicia_M_v1_2_follower_ARX_PX6D.urdf"
 )
 DEFAULT_JSON = ROOT / "arx_m_can" / "models" / "alicia_m_px6d_dynamics.json"
-DEFAULT_SCALES = ROOT / "arx_m_can" / "config" / "gravity_joint_scales.yaml"
 EXPORT_SCRIPT = ROOT / "scripts" / "export_dynamics_model.py"
 
 JOINT_NAMES = [f"joint{i}" for i in range(1, 7)]
@@ -85,6 +86,23 @@ CALIBRATION_POSES: dict[int, dict[str, list[float]]] = {
         "j1_pos90": [1.5708, 0.0, 0.0, 0.0, 0.0, 0.0],
     },
 }
+
+
+def apply_robot_path_defaults(args: argparse.Namespace) -> None:
+    """Set URDF / scales / dynamics JSON defaults from --robot when not overridden."""
+    robot_name = getattr(args, "robot", None)
+    if not robot_name:
+        return
+    variant = _import_profiles().get_robot(robot_name)
+    if getattr(args, "urdf", None) == DEFAULT_URDF:
+        args.urdf = variant.urdf
+    if getattr(args, "scales_file", None) == DEFAULT_SCALES:
+        args.scales_file = variant.scales_yaml
+    if getattr(args, "out", None) == DEFAULT_JSON:
+        args.out = variant.dynamics_json
+    dynamics_json = getattr(args, "dynamics_json", None)
+    if dynamics_json == DEFAULT_JSON:
+        args.dynamics_json = variant.dynamics_json
 
 
 def load_scales_yaml(path: Path) -> tuple[list[float], dict[str, Any]]:
@@ -234,27 +252,32 @@ def cmd_audit(args: argparse.Namespace) -> int:
     if float(tool0) < 1e-6:
         print("Note: tool0 has zero URDF inertial — PX6D sensor mass should live in link6 merge or tool0.")
 
-    if DEFAULT_JSON.is_file():
-        payload = json.loads(DEFAULT_JSON.read_text(encoding="utf-8"))
+    if getattr(args, "dynamics_json", DEFAULT_JSON).is_file():
+        payload = json.loads(Path(args.dynamics_json).read_text(encoding="utf-8"))
         json_masses = payload.get("masses", [])
         if json_masses:
-            print(f"\nEmbedded JSON ({DEFAULT_JSON.name}): sum(masses)={sum(json_masses):.4f} kg")
+            json_path = Path(args.dynamics_json)
+            print(f"\nEmbedded JSON ({json_path.name}): sum(masses)={sum(json_masses):.4f} kg")
             if abs(sum(json_masses) - model_mass_sum) > 1e-3:
                 print("  WARNING: JSON masses differ from current URDF — run export-model.")
     return 0
 
 
 def cmd_export_model(args: argparse.Namespace) -> int:
-    cmd = [
-        sys.executable,
-        str(EXPORT_SCRIPT),
-        "--urdf",
-        str(args.urdf),
-        "--end-link",
-        args.end_link,
-        "--out",
-        str(args.out),
-    ]
+    cmd = [sys.executable, str(EXPORT_SCRIPT)]
+    if args.robot:
+        cmd.extend(["--robot", args.robot])
+    else:
+        cmd.extend(
+            [
+                "--urdf",
+                str(args.urdf),
+                "--end-link",
+                args.end_link,
+                "--out",
+                str(args.out),
+            ]
+        )
     print("Running:", " ".join(cmd))
     subprocess.run(cmd, check=True)
     print("Next: maturin develop --release  (re-embed JSON in Rust binary)")
@@ -302,7 +325,7 @@ def _import_native():
 
 def cmd_float_test(args: argparse.Namespace) -> int:
     native = _import_native()
-    scales, _ = load_scales_yaml(Path(args.scales_file))
+    setup = resolve_robot_setup(args, prefer_float=True)
     stop = False
 
     def _sig(_a, _b):
@@ -313,13 +336,16 @@ def cmd_float_test(args: argparse.Namespace) -> int:
     robot = native.Robot(
         port=args.port,
         control_hz=args.control_hz,
-        arm_control_mode="mit",
-        use_gravity_ff=True,
-        gravity_joint_scales=scales,
-        auto_enable=True,
+        **robot_gravity_kwargs(setup),
     )
+    kp, kd = robot.get_arm_mit_gains()
     focus = args.focus_joint
-    print(f"Float test (FF on, scales={scales}). Focus: joint{focus}. Ctrl+C to stop.")
+    robot_note = f"robot={setup.robot}" if setup.robot else "robot=default"
+    print(
+        f"Float test ({robot_note}, FF on, scales={setup.scales}). "
+        f"Kp={[f'{v:.1f}' for v in kp[:6]]} Kd={[f'{v:.1f}' for v in kd[:6]]}. "
+        f"Focus: joint{focus}. Ctrl+C to stop."
+    )
     t0 = time.time()
     try:
         while not stop and (time.time() - t0) < args.duration:
@@ -343,7 +369,8 @@ def cmd_measure(args: argparse.Namespace) -> int:
     from robocore.dynamics.api import gravity
 
     native = _import_native()
-    scales, _ = load_scales_yaml(Path(args.scales_file))
+    setup = resolve_robot_setup(args, prefer_float=True)
+    scales = setup.scales
     urdf = Path(args.urdf)
     robot_model = _robot_model(urdf, args.end_link)
     focus = args.focus_joint
@@ -354,10 +381,7 @@ def cmd_measure(args: argparse.Namespace) -> int:
     robot = native.Robot(
         port=args.port,
         control_hz=native.DEFAULT_MIT_CONTROL_HZ,
-        arm_control_mode="mit",
-        use_gravity_ff=True,
-        gravity_joint_scales=scales,
-        auto_enable=True,
+        **robot_gravity_kwargs(setup),
     )
     try:
         q0 = robot.get_joint_positions()
@@ -396,7 +420,10 @@ def cmd_measure(args: argparse.Namespace) -> int:
             updated = scales.copy()
             updated[j] = ratio
             print(f"  Updated scales preview: {[f'{v:.4f}' for v in updated]}")
-            print("  Apply: python examples/12_gravity_calibrate.py write-scales", " ".join(f"{v:.4f}" for v in updated))
+            print("  Apply: python examples/12_gravity_calibrate.py", end="")
+            if setup.robot:
+                print(f" --robot {setup.robot}", end="")
+            print(" write-scales", " ".join(f"{v:.4f}" for v in updated))
         else:
             print(f"\nFocus joint{focus}: |g_model|={abs(g_model[j]):.4f} < {args.min_g} — try another pose.")
 
@@ -410,17 +437,17 @@ def cmd_measure(args: argparse.Namespace) -> int:
 
 def cmd_compare_ff(args: argparse.Namespace) -> int:
     native = _import_native()
-    scales, _ = load_scales_yaml(Path(args.scales_file))
+    setup = resolve_robot_setup(args, prefer_float=True)
 
     def run_block(ff: bool, label: str) -> None:
         print(f"\n=== {label} (gravity_ff={ff}) ===")
+        kwargs = robot_gravity_kwargs(setup, use_gravity_ff=ff)
+        if not ff:
+            kwargs["gravity_joint_scales"] = [1.0] * 6
         robot = native.Robot(
             port=args.port,
             control_hz=args.control_hz,
-            arm_control_mode="mit",
-            use_gravity_ff=ff,
-            gravity_joint_scales=scales if ff else [1.0] * 6,
-            auto_enable=True,
+            **kwargs,
         )
         t0 = time.time()
         try:
@@ -450,7 +477,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--urdf", type=Path, default=DEFAULT_URDF)
     parser.add_argument("--end-link", default="tool0")
-    parser.add_argument("--scales-file", type=Path, default=DEFAULT_SCALES)
+    parser.add_argument("--dynamics-json", type=Path, default=DEFAULT_JSON)
+    add_robot_arguments(parser)
     sub = parser.add_subparsers(dest="command", required=True)
 
     sub.add_parser("guide", help="Print distal-first checklist").set_defaults(func=cmd_guide)
@@ -499,6 +527,9 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
+    if getattr(args, "scales_file", None) is None:
+        args.scales_file = DEFAULT_SCALES
+    apply_robot_path_defaults(args)
     return args.func(args)
 
 

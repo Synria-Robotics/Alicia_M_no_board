@@ -84,6 +84,7 @@ impl PyRobot {
         use_gravity_ff=true,
         gravity_model_path=None,
         gravity_joint_scales=None,
+        config_path=None,
     ))]
     fn new(
         port: Option<&str>,
@@ -96,6 +97,7 @@ impl PyRobot {
         use_gravity_ff: bool,
         gravity_model_path: Option<&str>,
         gravity_joint_scales: Option<Vec<f64>>,
+        config_path: Option<&str>,
     ) -> PyResult<Self> {
         let port = port.unwrap_or(DEFAULT_PORT);
         let mut gravity = GravityCompConfig {
@@ -118,6 +120,7 @@ impl PyRobot {
         } else {
             control_hz
         };
+        let hw_yaml = config_path.map(std::path::Path::new);
         let robot = ArxMCanRobot::new(
             port,
             baud,
@@ -128,6 +131,7 @@ impl PyRobot {
             auto_enable,
             false,
             Some(arm_control_mode),
+            hw_yaml,
             Some(gravity),
         )
         .map_err(map_err)?;

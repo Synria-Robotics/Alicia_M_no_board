@@ -1,15 +1,20 @@
 #!/usr/bin/env python3
 """MIT gravity-compensated hold with tracking error log.
 
-Uses Kp/Kd from ``arx_m_can_dm.yaml`` (Kp=0 for float test, Kp>0 for stiff hold).
+Uses Kp/Kd from hardware YAML (``--float`` → kp=0 float config).
 
 Run from the ``arx`` conda env after building the Python extension::
 
     conda activate arx
     cd /home/ubuntu/Synria/arx/Rust/arx_m_can
     maturin develop --release
+
+    # Default (root config + embedded px6d dynamics)
     python examples/09_mit_gravity_hold.py --duration 10
-    python examples/09_mit_gravity_hold.py --duration 10 --focus-joint 1
+
+    # Follower arm — gravity-only float test (kp=0, follower model + scales)
+    python examples/09_mit_gravity_hold.py --robot follower --float --duration 30
+    python examples/09_mit_gravity_hold.py --robot follower --float --focus-joint 4
 """
 
 from __future__ import annotations
@@ -19,9 +24,13 @@ import math
 import signal
 import sys
 import time
-from pathlib import Path
 
-from common import DEFAULT_SCALES, ensure_native_path, load_gravity_scales
+from common import (
+    add_robot_arguments,
+    ensure_native_path,
+    resolve_robot_setup,
+    robot_gravity_kwargs,
+)
 
 ensure_native_path()
 
@@ -44,12 +53,13 @@ def main() -> int:
     parser.add_argument("--port", default=None)
     parser.add_argument("--duration", type=float, default=10.0)
     parser.add_argument("--control-hz", type=float, default=DEFAULT_MIT_CONTROL_HZ)
-    parser.add_argument("--scales-file", type=Path, default=DEFAULT_SCALES)
     parser.add_argument("--focus-joint", type=int, default=None, choices=range(1, 7))
     parser.add_argument("--log-hz", type=float, default=5.0, help="Print rate (Hz)")
+    add_robot_arguments(parser)
     args = parser.parse_args()
 
-    scales = load_gravity_scales(args.scales_file)
+    setup = resolve_robot_setup(args)
+    scales = setup.scales
 
     stop = False
 
@@ -62,14 +72,16 @@ def main() -> int:
     robot = Robot(
         port=args.port,
         control_hz=args.control_hz,
-        arm_control_mode="mit",
-        use_gravity_ff=True,
-        gravity_joint_scales=scales,
-        auto_enable=True,
+        **robot_gravity_kwargs(setup),
     )
     q_des = robot.get_commanded_joints()[:6]
     kp, kd = robot.get_arm_mit_gains()
-    print(f"MIT hold at {args.control_hz:.0f} Hz, scales={scales}")
+    robot_note = f"robot={setup.robot}" if setup.robot else "robot=default"
+    print(f"MIT hold at {args.control_hz:.0f} Hz, {robot_note}, scales={scales}")
+    if setup.config_path:
+        print(f"config={setup.config_path.name}")
+    if setup.dynamics_model_path:
+        print(f"dynamics={setup.dynamics_model_path.name}")
     print(f"Kp={[f'{v:.1f}' for v in kp[:6]]}  Kd={[f'{v:.1f}' for v in kd[:6]]}")
     print(f"q_des = {[f'{v:.4f}' for v in q_des]}")
     print("err = q_meas - q_des. Ctrl+C to stop.\n")

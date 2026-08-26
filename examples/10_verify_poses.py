@@ -8,6 +8,9 @@ Uses Ruckig jerk-limited trajectories in the 500 Hz refresh loop with gravity FF
     maturin develop --release
     python examples/10_verify_poses.py
     python examples/10_verify_poses.py --speed 60 --motion-tolerance 0.02
+
+    # Follower arm (robot scales, dynamics JSON, and MIT gains)
+    python examples/10_verify_poses.py --robot follower
 """
 
 from __future__ import annotations
@@ -19,14 +22,15 @@ from pathlib import Path
 
 from common import (
     DEFAULT_POSES,
-    DEFAULT_SCALES,
+    add_robot_arguments,
     at_target,
     ensure_native_path,
     fmt_joints,
     hold_stats,
     joint_errors,
-    load_gravity_scales,
     load_poses,
+    resolve_robot_setup,
+    robot_gravity_kwargs,
 )
 
 ensure_native_path()
@@ -42,7 +46,6 @@ def worst_joint(q_meas: list[float], q_des: list[float]) -> tuple[int, float]:
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--poses", type=Path, default=DEFAULT_POSES)
-    p.add_argument("--scales-file", type=Path, default=DEFAULT_SCALES)
     p.add_argument(
         "--speed",
         type=float,
@@ -64,20 +67,24 @@ def main() -> int:
         help="Wait-for-completion tolerance during Ruckig move (rad); looser than hold",
     )
     p.add_argument("--converge-timeout", type=float, default=30.0)
+    add_robot_arguments(p)
     args = p.parse_args()
 
     poses = load_poses(args.poses)
-    scales = load_gravity_scales(args.scales_file)
+    setup = resolve_robot_setup(args)
     robot = _native.Robot(
-        arm_control_mode="mit",
-        use_gravity_ff=True,
-        gravity_joint_scales=scales,
-        auto_enable=True,
         wait_tolerance_rad=args.motion_tolerance,
         wait_timeout_sec=args.converge_timeout,
+        **robot_gravity_kwargs(setup),
     )
 
     print(f"{len(poses)} poses from {args.poses.name}")
+    if setup.robot:
+        print(f"robot={setup.robot}")
+    if setup.config_path:
+        print(f"config={setup.config_path.name}")
+    if setup.dynamics_model_path:
+        print(f"dynamics={setup.dynamics_model_path.name}")
     print("Mode: MIT + Ruckig trajectory + gravity FF")
     kp, kd = robot.get_arm_mit_gains()
     print(f"Kp={[round(x, 1) for x in kp[:6]]}  Kd={[round(x, 1) for x in kd[:6]]}")
@@ -99,6 +106,29 @@ def main() -> int:
         f"hold_tol={args.joint_tolerance:.3f} rad  "
         f"converge_timeout={args.converge_timeout:.1f} s\n"
     )
+
+    diagnostics = robot.get_motor_diagnostics(True)[:6]
+    bad_status = [
+        (i + 1, d["status_name"], d["status_code"])
+        for i, d in enumerate(diagnostics)
+        if d["status_name"] != "ENABLED"
+    ]
+    if bad_status:
+        print("FAIL: not all arm motors report ENABLED before pose sequence:")
+        for joint, name, code in bad_status:
+            d = diagnostics[joint - 1]
+            print(
+                f"  j{joint}: {name}({code:#x})  q={d['position']:.4f}  "
+                f"torque={d['torque']:+.3f} Nm"
+            )
+        print(
+            "\nRe-run after power-cycling the arm or:\n"
+            "  python examples/11_diagnose_mit_joint.py --robot follower\n"
+            "  python examples/11_diagnose_mit_joint.py --robot follower --joint 1 --step 0.05"
+        )
+        robot.disconnect()
+        return 2
+
     print(f"{'pose':>4}  {'ok':>3}  {'max|e|':>36}  {'rmse':>36}")
     print("-" * 86)
 

@@ -1,7 +1,13 @@
+# Float config for gravity calibration (kp=0, kd=1 on arm joints).
+# Profile: arx
 name: ARX-M-CAN
 
 # Arm joint control: mit | posvel
 arm_control_mode: mit
+
+# Arm MIT gains tuned with gravity FF (see gravity_joint_scales.yaml).
+# Auto-tune: python examples/13_mit_gain_autotune.py tune --write-yaml
+# J6 at calibration ref: python examples/13_mit_gain_autotune.py tune --focus-joint 6 --goto-ref-pose --write-yaml
 
 channel: /dev/ttyACM0
 baud: 1000000
@@ -29,8 +35,8 @@ joints:
     feedback_id: 0x11
     model: "4340P"
     MIT:
-      kp: 120.0
-      kd: 8.0
+      kp: 0.0
+      kd: 1.0
     POS_VEL:
       vel_kp: 0.0125
       vel_ki: 0.004
@@ -43,8 +49,8 @@ joints:
     feedback_id: 0x12
     model: "4340P"
     MIT:
-      kp: 120.0
-      kd: 8.0
+      kp: 0.0
+      kd: 1.0
     POS_VEL:
       vel_kp: 0.0125
       vel_ki: 0.004
@@ -57,8 +63,8 @@ joints:
     feedback_id: 0x13
     model: "4340P"
     MIT:
-      kp: 120.0
-      kd: 8.0
+      kp: 0.0
+      kd: 1.0
     POS_VEL:
       vel_kp: 0.0125
       vel_ki: 0.004
@@ -71,8 +77,8 @@ joints:
     feedback_id: 0x14
     model: "4310"
     MIT:
-      kp: 18.0
-      kd: 2.0
+      kp: 0.0
+      kd: 1.0
     POS_VEL:
       vel_kp: 0.0050
       vel_ki: 0.002
@@ -85,8 +91,8 @@ joints:
     feedback_id: 0x15
     model: "4310"
     MIT:
-      kp: 18.0
-      kd: 2.0
+      kp: 0.0
+      kd: 1.0
     POS_VEL:
       vel_kp: 0.0008
       vel_ki: 0.002
@@ -99,8 +105,8 @@ joints:
     feedback_id: 0x16
     model: "4310"
     MIT:
-      kp: 18.0
-      kd: 2.0
+      kp: 0.0
+      kd: 1.0
     POS_VEL:
       vel_kp: 0.0008
       vel_ki: 0.002

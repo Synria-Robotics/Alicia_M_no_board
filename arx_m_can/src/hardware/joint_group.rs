@@ -14,6 +14,11 @@ enum GroupMode {
     PosVel,
 }
 
+const STATUS_ENABLED: u8 = 0x1;
+const CTRL_MODE_MIT: u32 = ControlMode::Mit as u32;
+const MODE_READ_TIMEOUT: Duration = Duration::from_millis(80);
+const ENABLE_SETTLE: Duration = Duration::from_millis(50);
+
 pub struct NoOpGroup;
 
 impl NoOpGroup {
@@ -92,14 +97,85 @@ impl JointGroup {
         self.joint_names.len()
     }
 
+    fn motor_enabled(motor: &DamiaoMotor) -> bool {
+        motor
+            .latest_state()
+            .map(|state| state.status_code == STATUS_ENABLED)
+            .unwrap_or(false)
+    }
+
+    fn motor_mit_mode(motor: &DamiaoMotor) -> bool {
+        motor
+            .get_register_u32(10, MODE_READ_TIMEOUT)
+            .ok()
+            .is_some_and(|mode| mode == CTRL_MODE_MIT)
+    }
+
+    pub fn all_motors_enabled(&self) -> bool {
+        self.joint_cfgs
+            .iter()
+            .all(|joint| Self::motor_enabled(&self.motors[&joint.name]))
+    }
+
+    pub fn all_motors_mit_mode(&self) -> bool {
+        self.joint_cfgs
+            .iter()
+            .all(|joint| Self::motor_mit_mode(&self.motors[&joint.name]))
+    }
+
+    pub fn adopt_mode_mit(&mut self) {
+        self.mode = GroupMode::Mit;
+    }
+
+    /// Enable only motors in this group that are not already enabled.
+    pub fn enable_selective(&self) -> Result<()> {
+        self.request_feedback();
+
+        let needs_enable: Vec<&JointCfg> = self
+            .joint_cfgs
+            .iter()
+            .filter(|joint| !Self::motor_enabled(&self.motors[&joint.name]))
+            .collect();
+
+        if needs_enable.is_empty() {
+            return Ok(());
+        }
+
+        for joint in &needs_enable {
+            let _ = self.motors[&joint.name].clear_error();
+        }
+        thread::sleep(Duration::from_millis(20));
+
+        for joint in &needs_enable {
+            self.motors[&joint.name].enable()?;
+        }
+        thread::sleep(ENABLE_SETTLE);
+        self.request_feedback();
+
+        let failed: Vec<String> = needs_enable
+            .iter()
+            .filter(|joint| !Self::motor_enabled(&self.motors[&joint.name]))
+            .map(|joint| joint.name.clone())
+            .collect();
+        if failed.is_empty() {
+            return Ok(());
+        }
+
+        Err(ArxError::Runtime(format!(
+            "{} enable failed for: {}",
+            self.name,
+            failed.join(", ")
+        )))
+    }
+
     pub fn enable(&self) -> Result<()> {
-        self.controller.enable_all()?;
-        thread::sleep(Duration::from_millis(50));
-        Ok(())
+        self.enable_selective()
     }
 
     pub fn disable(&self) {
-        let _ = self.controller.disable_all();
+        for joint in &self.joint_cfgs {
+            let _ = self.motors[&joint.name].disable();
+        }
         thread::sleep(Duration::from_millis(50));
     }
 
@@ -112,9 +188,13 @@ impl JointGroup {
         thread::sleep(Duration::from_millis(20));
     }
 
-    pub fn mode_mit(&mut self) -> Result<()> {
+    /// Enter MIT mode only for joints that are not already in MIT.
+    pub fn ensure_mit_mode(&mut self) -> Result<()> {
         for joint in &self.joint_cfgs {
             let motor = &self.motors[&joint.name];
+            if Self::motor_mit_mode(motor) {
+                continue;
+            }
             let mut last_error = None;
             for _ in 0..3 {
                 match motor.ensure_control_mode(ControlMode::Mit, Duration::from_secs(1)) {
@@ -124,7 +204,7 @@ impl JointGroup {
                     }
                     Err(error) => {
                         last_error = Some(error);
-                        thread::sleep(Duration::from_millis(100));
+                        thread::sleep(Duration::from_millis(50));
                     }
                 }
             }
@@ -134,11 +214,13 @@ impl JointGroup {
                     joint.name
                 )));
             }
-            thread::sleep(Duration::from_millis(50));
         }
         self.mode = GroupMode::Mit;
-        thread::sleep(Duration::from_millis(200));
         Ok(())
+    }
+
+    pub fn mode_mit(&mut self) -> Result<()> {
+        self.ensure_mit_mode()
     }
 
     pub fn mode_pos_vel(&mut self) -> Result<()> {
@@ -167,7 +249,7 @@ impl JointGroup {
             thread::sleep(Duration::from_millis(50));
         }
         self.mode = GroupMode::PosVel;
-        thread::sleep(Duration::from_millis(200));
+        thread::sleep(Duration::from_millis(100));
         Ok(())
     }
 
@@ -257,7 +339,7 @@ impl GroupKind {
     pub fn enable(&self) {
         match self {
             GroupKind::Active(group) => {
-                let _ = group.enable();
+                let _ = group.enable_selective();
             }
             GroupKind::NoOp(group) => group.enable(),
         }

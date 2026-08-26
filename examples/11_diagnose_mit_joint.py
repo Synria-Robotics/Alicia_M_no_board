@@ -5,8 +5,9 @@ Status only (holds the current pose):
     python examples/11_diagnose_mit_joint.py
 
 Small signed step on one joint, then restore the starting pose:
+    python examples/11_diagnose_mit_joint.py --robot follower
+    python examples/11_diagnose_mit_joint.py --robot follower --joint 1 --step 0.05
     python examples/11_diagnose_mit_joint.py --joint 2 --step -0.03
-    python examples/11_diagnose_mit_joint.py --joint 3 --step -0.03
 """
 
 from __future__ import annotations
@@ -17,7 +18,12 @@ import sys
 import time
 from pathlib import Path
 
-from common import DEFAULT_SCALES, ensure_native_path, load_gravity_scales
+from common import (
+    add_robot_arguments,
+    ensure_native_path,
+    resolve_robot_setup,
+    robot_gravity_kwargs,
+)
 
 ensure_native_path()
 import _native  # noqa: E402
@@ -40,7 +46,7 @@ def print_diagnostics(robot) -> list[dict]:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", default=None)
-    parser.add_argument("--scales-file", type=Path, default=DEFAULT_SCALES)
+    add_robot_arguments(parser)
     parser.add_argument("--joint", type=int, choices=range(1, 7))
     parser.add_argument(
         "--step",
@@ -57,12 +63,10 @@ def main() -> int:
     if args.step is not None and (not math.isfinite(args.step) or abs(args.step) > 0.10):
         raise SystemExit("--step must be finite and satisfy |step| <= 0.10 rad")
 
+    setup = resolve_robot_setup(args)
     robot = _native.Robot(
         port=args.port,
-        arm_control_mode="mit",
-        use_gravity_ff=True,
-        gravity_joint_scales=load_gravity_scales(args.scales_file),
-        auto_enable=True,
+        **robot_gravity_kwargs(setup),
     )
     try:
         q_start = list(robot.get_joint_positions()[:6])

@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Inverse kinematics demo (RoboCore IK + MIT motion)."""
+"""Inverse kinematics demo (RoboCore IK + MIT motion).
+
+    python examples/07_inverse_kinematics.py --execute
+    python examples/07_inverse_kinematics.py --robot follower --execute
+    python examples/07_inverse_kinematics.py --robot px6d --execute --speed 60
+"""
 
 from __future__ import annotations
 
@@ -15,12 +20,24 @@ if str(ROOT) not in sys.path:
 
 from api.synria_robot_api import create_robot
 
-from common import add_connection_arguments
+from common import add_connection_arguments, add_robot_arguments, resolve_robot_setup, synria_robot_kwargs
 
 
 def main(args: argparse.Namespace) -> None:
-    robot = create_robot(port=args.port, baud=args.baud)
+    setup = resolve_robot_setup(args)
+    robot = create_robot(
+        port=args.port,
+        baud=args.baud,
+        auto_enable=args.execute,
+        **synria_robot_kwargs(setup),
+    )
     try:
+        if setup.robot:
+            print(f"robot={setup.robot}")
+        if setup.urdf_path:
+            print(f"urdf={setup.urdf_path.name}")
+        if setup.config_path:
+            print(f"config={setup.config_path.name}")
         result = robot.set_pose(
             args.end_pose,
             method=args.method,
@@ -70,4 +87,5 @@ if __name__ == "__main__":
     parser.add_argument("--execute", action="store_true")
     parser.add_argument("--force-execute", action="store_true")
     add_connection_arguments(parser)
+    add_robot_arguments(parser)
     main(parser.parse_args())
