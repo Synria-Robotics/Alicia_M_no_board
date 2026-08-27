@@ -7,9 +7,9 @@ end_link: tool0
 
 joint_scales:
   - 1.0000  # joint1 / link1
-  - 1.1329  # joint2 / link2
-  - 1.0500  # joint3 / link3
-  - 1.1300  # joint4 / link4
+  - 1.0000  # joint2 / link2
+  - 1.0000  # joint3 / link3
+  - 1.0000  # joint4 / link4
   - 1.0000  # joint5 / link5
   - 1.0000  # joint6 / link6 (+ merged link7/8/tool0)
 

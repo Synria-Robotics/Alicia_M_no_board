@@ -19,6 +19,11 @@ Run in ``arx`` conda env with the arm manually placed at a representative hold p
     # J6 at calibration ref:
     python examples/13_mit_gain_autotune.py tune --focus-joint 6 --goto-ref-pose --write-yaml
 
+    # ARX arm (production config + gravity FF)
+    python examples/13_mit_gain_autotune.py --robot arx --no-float tune --focus-joint 1 --mode step --write-yaml
+    python examples/13_mit_gain_autotune.py --robot arx --no-float tune --write-yaml
+    python examples/13_mit_gain_autotune.py --robot arx --no-float tune --focus-joint 6 --goto-ref-pose --write-yaml
+
     # Follower arm
     python examples/13_mit_gain_autotune.py --robot follower tune --focus-joint 1 --mode step --write-yaml
     python examples/13_mit_gain_autotune.py --robot follower tune --write-yaml

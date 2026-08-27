@@ -22,8 +22,8 @@ DEFAULT_PORT = "/dev/ttyACM0"
 DEFAULT_BAUD = 1_000_000
 DEFAULT_SCALES = ROOT / "arx_m_can" / "config" / "gravity_joint_scales.yaml"
 DEFAULT_POSES = Path(
-    "/home/ubuntu/Synria/geom_arx/src/calibration/config/poses_master.yaml"
-    # "/home/ubuntu/Synria/geom_arx/src/calibration/config/poses_slave.yaml"
+    # "/home/ubuntu/Synria/geom_arx/src/calibration/config/poses_master.yaml"
+    "/home/ubuntu/Synria/geom_arx/src/calibration/config/poses_slave.yaml"
 )
 NUM_ARM_JOINTS = 6
 ROBOT_CHOICES = ("px6d", "arx", "follower")
