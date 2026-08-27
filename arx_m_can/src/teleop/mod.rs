@@ -123,6 +123,7 @@ fn teleop_loop<F>(
                     None,
                     config.max_joint_accel_rad_s2,
                     config.max_joint_jerk_rad_s3,
+                    true,
                 );
             }
         }

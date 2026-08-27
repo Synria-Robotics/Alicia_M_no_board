@@ -3,6 +3,7 @@
 
 Status only (holds the current pose):
     python examples/11_diagnose_mit_joint.py
+    python examples/11_diagnose_mit_joint.py --port /dev/ttyACM1
 
 Small signed step on one joint, then restore the starting pose:
     python examples/11_diagnose_mit_joint.py --robot follower
@@ -16,17 +17,8 @@ import argparse
 import math
 import sys
 import time
-from pathlib import Path
 
-from common import (
-    add_robot_arguments,
-    ensure_native_path,
-    resolve_robot_setup,
-    robot_gravity_kwargs,
-)
-
-ensure_native_path()
-import _native  # noqa: E402
+from common import add_robot_arguments, make_robot
 
 
 def print_diagnostics(robot) -> list[dict]:
@@ -45,7 +37,6 @@ def print_diagnostics(robot) -> list[dict]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--port", default=None)
     add_robot_arguments(parser)
     parser.add_argument("--joint", type=int, choices=range(1, 7))
     parser.add_argument(
@@ -63,11 +54,7 @@ def main() -> int:
     if args.step is not None and (not math.isfinite(args.step) or abs(args.step) > 0.10):
         raise SystemExit("--step must be finite and satisfy |step| <= 0.10 rad")
 
-    setup = resolve_robot_setup(args)
-    robot = _native.Robot(
-        port=args.port,
-        **robot_gravity_kwargs(setup),
-    )
+    robot = make_robot(args)
     try:
         q_start = list(robot.get_joint_positions()[:6])
         print("MIT diagnostics (nominal refresh target: 500 Hz)")

@@ -7,11 +7,10 @@ styled like [Alicia-D-SDK](https://github.com/Synria-Robotics/Alicia-D-SDK).
 
 ```text
 arx_m_can/
-├── arx_m_can/          # Rust library (motorbridge)
+├── arx_m_can/          # Rust library + config/profiles/{px6d,arx,follower}
 ├── arx_m_can_py/       # PyO3 extension (_native)
-├── api/
-│   └── synria_robot_api.py
-├── examples/           # Python demos
+├── api/                # profiles, kinematics, SynriaRobotAPI
+├── examples/
 └── pyproject.toml
 ```
 
@@ -65,7 +64,8 @@ Higher-level helpers are also exported from `api.synria_robot_api`:
 
 ## Examples
 
-All examples accept `--port` and `--baud` (default `/dev/ttyACM0`, `1000000`).
+All examples accept `--port`, `--baud`, and `--robot {px6d,arx,follower}`
+(default `/dev/ttyACM0`, `1000000`, `px6d`).
 Ordered basic → advanced:
 
 | # | Script | Topic |
@@ -99,4 +99,5 @@ python examples/14_teleop_alicia_d_leader.py --leader-port /dev/ttyACM0 --follow
 python examples/15_sparkvis_control.py --dry-run
 ```
 
-Hardware config: `arx_m_can/config/arx_m_can_dm.yaml`.
+Hardware config lives under `arx_m_can/config/profiles/<robot>/arx_m_can_dm.yaml`
+(default robot: `px6d`).

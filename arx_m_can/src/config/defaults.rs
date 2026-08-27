@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use crate::error::{ArxError, Result};
 
 pub fn default_hw_cfg_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("config/arx_m_can_dm.yaml")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("config/profiles/px6d/arx_m_can_dm.yaml")
 }
 
 pub fn resolve_hw_cfg_path(hw_yaml: Option<&Path>) -> Result<PathBuf> {

@@ -17,16 +17,9 @@ Examples:
 from __future__ import annotations
 
 import argparse
-import sys
-from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
-
-from api.synria_robot_api import SparkVisBridge, create_robot
-
-from common import add_connection_arguments
+from common import add_robot_arguments, make_robot
+from api.synria_robot_api import SparkVisBridge
 
 
 def main(args: argparse.Namespace) -> int:
@@ -43,7 +36,7 @@ def main(args: argparse.Namespace) -> int:
     )
     try:
         if not args.dry_run:
-            robot = create_robot(port=args.port, baud=args.baud)
+            robot = make_robot(args)
             bridge.connect_robot(robot)
         bridge.start()
         if args.enable or args.dry_run:
@@ -88,5 +81,5 @@ if __name__ == "__main__":
     parser.add_argument("--dry-run", action="store_true", help="Print targets only; no CAN")
     parser.add_argument("--no-sync", action="store_true", help="Skip initial joint_state POST")
     parser.add_argument("--gripper", action="store_true", help="Stream gripper from SparkVis")
-    add_connection_arguments(parser)
+    add_robot_arguments(parser)
     raise SystemExit(main(parser.parse_args()))

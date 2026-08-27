@@ -1,17 +1,15 @@
 #!/usr/bin/env python3
-"""Write current motor positions as zero after explicit confirmation."""
+"""Write current motor positions as zero after explicit confirmation.
+
+    python examples/08_zero_current_position.py
+    python examples/08_zero_current_position.py --port /dev/ttyACM2 --robot arx --yes
+"""
 
 from __future__ import annotations
 
 import argparse
-import sys
-from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
-
-from common import add_connection_arguments, make_arm
+from common import add_robot_arguments, make_arm
 
 
 def main(args: argparse.Namespace) -> None:
@@ -48,5 +46,5 @@ if __name__ == "__main__":
         action="store_true",
         help="Actually write zero positions. Without this flag, only print current state.",
     )
-    add_connection_arguments(parser)
+    add_robot_arguments(parser)
     main(parser.parse_args())

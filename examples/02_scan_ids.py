@@ -1,17 +1,15 @@
 #!/usr/bin/env python3
-"""Scan Damiao motor IDs without enabling the arm."""
+"""Scan Damiao motor IDs without enabling the arm.
+
+    python examples/02_scan_ids.py
+    python examples/02_scan_ids.py --port /dev/ttyACM2 --robot arx
+"""
 
 from __future__ import annotations
 
 import argparse
-import sys
-from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
-
-from common import add_connection_arguments, make_arm
+from common import add_robot_arguments, make_arm
 
 
 def main(args: argparse.Namespace) -> None:
@@ -33,5 +31,5 @@ if __name__ == "__main__":
     parser.add_argument("--model", default="4340P")
     parser.add_argument("--timeout-ms", type=int, default=30)
     parser.add_argument("--feedback-base", default="0x10")
-    add_connection_arguments(parser)
+    add_robot_arguments(parser)
     main(parser.parse_args())

@@ -1,28 +1,24 @@
 #!/usr/bin/env python3
-"""Read joint positions from ARX-M-CAN arm (does not enable/disable or switch modes)."""
+"""Read joint positions (does not enable motors).
+
+    python examples/01_read_state.py --port /dev/ttyACM2 --robot arx
+"""
 
 from __future__ import annotations
 
 import argparse
 import math
 import sys
-from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
-
-from api.synria_robot_api import Arm
-
-from common import add_connection_arguments
+from common import add_robot_arguments, make_arm
 
 
 def main(args: argparse.Namespace) -> None:
-    arm = Arm(port=args.port, baud=args.baud)
+    print(f"robot={args.robot}", file=sys.stderr)
+    arm = make_arm(args)
     arm.connect()
     try:
-        state = arm.read_state(request_feedback=True)
-        values = [float(q) for q in state["arm"]["positions"][:6]]
+        values = [float(q) for q in arm.read_state(request_feedback=True)["arm"]["positions"][:6]]
         if any(math.isnan(v) for v in values):
             print("WARNING: incomplete motor feedback (NaN joints)", file=sys.stderr)
         print(values)
@@ -32,5 +28,5 @@ def main(args: argparse.Namespace) -> None:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Read ARX-M-CAN joint state")
-    add_connection_arguments(parser)
+    add_robot_arguments(parser)
     main(parser.parse_args())

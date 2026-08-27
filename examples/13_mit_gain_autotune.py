@@ -9,6 +9,7 @@ Run in ``arx`` conda env with the arm manually placed at a representative hold p
 
     # Tune all joints (proximal → distal, j1 → j6), writes arx_m_can_dm.yaml
     python examples/13_mit_gain_autotune.py tune --write-yaml
+    python examples/13_mit_gain_autotune.py --port /dev/ttyACM1 tune --write-yaml
 
     # Step test (target joint moves between two angles; others fixed) — best for j1–j4
     python examples/13_mit_gain_autotune.py tune --focus-joint 1 --mode step --joint-delta 0.4 --write-yaml
@@ -47,22 +48,7 @@ from pathlib import Path
 
 import yaml
 
-from common import (
-    add_robot_arguments,
-    ensure_native_path,
-    resolve_robot_setup,
-    robot_gravity_kwargs,
-)
-
-ensure_native_path()
-
-ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_ORIGIN = ROOT / "arx_m_can" / "config" / "arx_m_can_dm_origin.yaml"
-DEFAULT_DM = ROOT / "arx_m_can" / "config" / "profiles" / "px6d" / "arx_m_can_dm.yaml"
-DEFAULT_SCALES = ROOT / "arx_m_can" / "config" / "profiles" / "px6d" / "gravity_joint_scales.yaml"
-DEFAULT_POSES = Path(
-    "/home/ubuntu/Synria/geom_arx/src/calibration/config/poses_slave.yaml"
-)
+from common import DEFAULT_POSES, add_robot_arguments, load_gravity_scales, make_robot, resolve_robot_setup
 
 JOINT_NAMES = [f"joint{i}" for i in range(1, 7)]
 # 4340P for j1-j3, 4310 for j4-j6
@@ -96,24 +82,6 @@ def step_positions(q_center: list[float], focus_joint: int, delta: float) -> tup
     return q_low, q_center, q_high
 
 
-def load_scales_yaml(path: Path) -> list[float]:
-    scales: list[float] = []
-    in_block = False
-    for line in path.read_text(encoding="utf-8").splitlines():
-        s = line.strip()
-        if s.startswith("joint_scales:"):
-            in_block = True
-            continue
-        if in_block:
-            if s.startswith("- "):
-                scales.append(float(s[2:].split("#", 1)[0].strip()))
-            elif s and not s.startswith("#"):
-                break
-    if len(scales) != 6:
-        raise SystemExit(f"Expected 6 joint_scales in {path}, got {len(scales)}")
-    return scales
-
-
 def load_ref_pose(path: Path) -> list[float]:
     data = yaml.safe_load(path.read_text(encoding="utf-8"))
     ref = data.get("ref")
@@ -145,6 +113,8 @@ def resolve_baseline_gains(args: argparse.Namespace) -> tuple[list[float], list[
     """Baseline for tuning: dm yaml by default (keeps prior per-joint results)."""
     if args.kp_baseline and args.kd_baseline:
         return list(args.kp_baseline), list(args.kd_baseline), Path("(cli)")
+    if args.from_origin and not args.origin_yaml:
+        raise SystemExit("--from-origin requires --origin-yaml")
     baseline_path = Path(args.origin_yaml if args.from_origin else args.baseline_yaml)
     kp, kd = load_mit_gains_yaml(baseline_path)
     if args.kp_baseline:
@@ -162,32 +132,12 @@ def joint_tune_order(order: str, focus_joint: int | None) -> list[int]:
     return list(range(1, 7))  # j1 → j6 (default, safer for Kp/Kd)
 
 
-def _import_native():
-    try:
-        import _native
-    except ImportError as exc:
-        raise ImportError(
-            "Run: conda activate arx && maturin develop --release"
-        ) from exc
-    return _native
-
-
-def resolve_tune_paths(
-    args: argparse.Namespace, setup
-) -> tuple[Path, Path, Path]:
-    """Return (baseline_yaml, dm_yaml, scales_file) honoring --robot."""
-    from common import _import_profiles
-
-    baseline = Path(args.origin_yaml if args.from_origin else args.baseline_yaml)
-    dm = Path(args.dm_yaml)
-    scales = setup.scales_path
-    if setup.robot and not args.from_origin:
-        profile = _import_profiles().get_robot(setup.robot)
-        if baseline == DEFAULT_DM:
-            baseline = profile.dm_yaml
-        if dm == DEFAULT_DM:
-            dm = profile.dm_yaml
-    return baseline, dm, scales
+def resolve_tune_paths(args: argparse.Namespace, setup) -> tuple[Path, Path, Path]:
+    if args.from_origin and not args.origin_yaml:
+        raise SystemExit("--from-origin requires --origin-yaml")
+    baseline = Path(args.origin_yaml if args.from_origin else args.baseline_yaml or setup.config_path)
+    dm = Path(args.dm_yaml or setup.config_path)
+    return baseline, dm, setup.scales_path
 
 
 def evaluate_hold(
@@ -210,8 +160,6 @@ def evaluate_hold(
         time.sleep(1.0 / max(sample_hz, 1.0))
 
     j = focus_joint - 1
-    t_skip = t0 + skip_sec
-    # Re-sample with timestamps approximated by index
     dt = 1.0 / max(sample_hz, 1.0)
     errs: list[float] = []
     vels: list[float] = []
@@ -506,21 +454,15 @@ def write_dm_yaml(path: Path, kp: list[float], kd: list[float]) -> None:
 
 
 def cmd_tune(args: argparse.Namespace) -> int:
-    native = _import_native()
     setup = resolve_robot_setup(args)
     baseline_path, dm_path, scales_path = resolve_tune_paths(args, setup)
     args.baseline_yaml = baseline_path
     args.dm_yaml = dm_path
-    scales = load_scales_yaml(scales_path)
+    scales = load_gravity_scales(scales_path)
     kp_origin, kd_origin, baseline_path = resolve_baseline_gains(args)
 
     print(f"Baseline yaml: {baseline_path}")
-    if setup.robot:
-        print(f"robot={setup.robot}")
-    if setup.config_path:
-        print(f"config={setup.config_path.name}")
-    if setup.dynamics_model_path:
-        print(f"dynamics={setup.dynamics_model_path.name}")
+    print(f"robot={setup.robot}  config={setup.config_path.name}")
     print("Baseline Kp:   ", [f"{v:.1f}" for v in kp_origin])
     print("Baseline Kd:   ", [f"{v:.1f}" for v in kd_origin])
     print("Gravity scales:", [f"{v:.3f}" for v in scales])
@@ -532,11 +474,7 @@ def cmd_tune(args: argparse.Namespace) -> int:
     print(f"Test mode:     {args.mode}")
     print("\nPlace arm at center pose (other joints fixed during step test).\n")
 
-    robot = native.Robot(
-        port=args.port,
-        control_hz=native.DEFAULT_MIT_CONTROL_HZ,
-        **robot_gravity_kwargs(setup),
-    )
+    robot = make_robot(args, control_hz=500.0)
     try:
         robot.set_arm_mit_gains(kp_origin, kd_origin)
         time.sleep(args.pose_settle_sec)
@@ -607,19 +545,17 @@ def cmd_tune(args: argparse.Namespace) -> int:
 def cmd_apply(args: argparse.Namespace) -> int:
     if len(args.values) != 12:
         raise SystemExit("apply requires 12 values: 6 kp then 6 kd")
-    kp = list(args.values[:6])
-    kd = list(args.values[6:])
-    write_dm_yaml(Path(args.dm_yaml), kp, kd)
+    setup = resolve_robot_setup(args)
+    write_dm_yaml(Path(args.dm_yaml or setup.config_path), list(args.values[:6]), list(args.values[6:]))
     return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--port", default=None)
     add_robot_arguments(parser)
-    parser.add_argument("--origin-yaml", type=Path, default=DEFAULT_ORIGIN, help="Factory defaults (use with --from-origin)")
-    parser.add_argument("--baseline-yaml", type=Path, default=DEFAULT_DM, help="Starting kp/kd for tuning (default: current dm yaml)")
-    parser.add_argument("--dm-yaml", type=Path, default=DEFAULT_DM, help="Output yaml for --write-yaml / apply")
+    parser.add_argument("--origin-yaml", type=Path, default=None, help="Factory defaults (use with --from-origin)")
+    parser.add_argument("--baseline-yaml", type=Path, default=None, help="Starting kp/kd (default: current dm yaml)")
+    parser.add_argument("--dm-yaml", type=Path, default=None, help="Output yaml for --write-yaml / apply")
     sub = parser.add_subparsers(dest="command", required=True)
 
     p = sub.add_parser("tune", help="Auto-tune Kd then Kp per joint")
@@ -650,7 +586,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--from-origin",
         action="store_true",
-        help="Use arx_m_can_dm_origin.yaml as baseline instead of current dm yaml",
+        help="Use --origin-yaml as baseline instead of current dm yaml",
     )
     p.add_argument("--trial-sec", type=float, default=2.5, help="Seconds sampled per gain trial")
     p.add_argument("--skip-sec", type=float, default=0.4, help="Ignore first N seconds after gain change")

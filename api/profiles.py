@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+import yaml
+
 ProfileName = Literal["px6d", "arx", "follower"]
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -71,7 +73,17 @@ def get_profile(name: str | ProfileName = DEFAULT_PROFILE) -> RobotProfile:
 
 
 get_robot = get_profile
-DEFAULT_ROBOT = DEFAULT_PROFILE
+PROFILE_NAMES = tuple(PROFILES)
+
+
+def load_gravity_scales(path: Path | None = None) -> list[float]:
+    """Load 6 joint_scales from a profile YAML (default: px6d)."""
+    yaml_path = path or get_profile().scales_yaml
+    data = yaml.safe_load(yaml_path.read_text(encoding="utf-8")) or {}
+    scales = [float(v) for v in data.get("joint_scales") or []]
+    if len(scales) != 6:
+        raise ValueError(f"Expected 6 gravity scales in {yaml_path}, got {len(scales)}")
+    return scales
 
 
 def export_dynamics_model(profile: RobotProfile, *, out: Path | None = None) -> Path:
@@ -119,18 +131,3 @@ def export_dynamics_model(profile: RobotProfile, *, out: Path | None = None) -> 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     return out_path
-
-
-def ensure_dynamics_model(profile: RobotProfile, *, refresh: bool = False) -> Path:
-    """Return dynamics JSON path, exporting from URDF when missing or stale."""
-    if refresh or not profile.dynamics_json.is_file():
-        return export_dynamics_model(profile)
-
-    try:
-        payload = json.loads(profile.dynamics_json.read_text(encoding="utf-8"))
-        if payload.get("urdf") != str(profile.urdf):
-            return export_dynamics_model(profile)
-    except (json.JSONDecodeError, OSError):
-        return export_dynamics_model(profile)
-
-    return profile.dynamics_json

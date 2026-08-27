@@ -7,12 +7,12 @@ from typing import Any, Sequence
 
 import numpy as np
 
-DEFAULT_URDF = Path(
-    "/home/ubuntu/Alicia/Synria-Robot-Descriptions/synriard/urdf/Alicia_M_v1_2/"
-    "Alicia_M_v1_2_follower_ARX_PX6D.urdf"
-)
-DEFAULT_BASE_LINK = "base_link"
-DEFAULT_END_LINK = "tool0"
+from .profiles import get_profile
+
+_DEFAULT = get_profile()
+DEFAULT_URDF = _DEFAULT.urdf
+DEFAULT_BASE_LINK = _DEFAULT.base_link
+DEFAULT_END_LINK = _DEFAULT.end_link
 
 
 def load_robot_model(

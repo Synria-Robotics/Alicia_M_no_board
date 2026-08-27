@@ -1,8 +1,9 @@
 use arx_m_can::{
-    scan_ids as rust_scan_ids, ArxMCanArm, ArxMCanRobot, ArxMCanState, ArxError, GravityCompConfig,
-    LeaderSample, ScanOptions, SparkVisBridge, SparkVisConfig, TeleopConfig, TeleopSession,
-    DEFAULT_ARM_CONTROL_MODE, DEFAULT_BAUD, DEFAULT_CONTROL_HZ, DEFAULT_MAX_JOINT_ACCEL_RAD_S2,
-    DEFAULT_MAX_JOINT_JERK_RAD_S3, DEFAULT_MIT_CONTROL_HZ, DEFAULT_PORT, DEFAULT_WAIT_TOLERANCE_RAD,
+    default_config, scan_ids as rust_scan_ids, ArxMCanArm, ArxMCanRobot, ArxMCanState, ArxError,
+    GravityCompConfig, LeaderSample, ScanOptions, SparkVisBridge, SparkVisConfig, TeleopConfig,
+    TeleopSession, DEFAULT_ARM_CONTROL_MODE, DEFAULT_BAUD, DEFAULT_CONTROL_HZ,
+    DEFAULT_MAX_JOINT_ACCEL_RAD_S2, DEFAULT_MAX_JOINT_JERK_RAD_S3, DEFAULT_MIT_CONTROL_HZ,
+    DEFAULT_PORT, DEFAULT_WAIT_TOLERANCE_RAD,
 };
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
@@ -220,7 +221,7 @@ impl PyRobot {
             .map_err(map_err)
     }
 
-    #[pyo3(signature = (target_joints=None, gripper_value=None, speed=400.0, gripper_speed=100.0, wait_for_completion=false, max_joint_accel_rad_s2=None, max_joint_jerk_rad_s3=None, joint_tolerance=None, converge_timeout=None))]
+    #[pyo3(signature = (target_joints=None, gripper_value=None, speed=400.0, gripper_speed=100.0, wait_for_completion=false, max_joint_accel_rad_s2=None, max_joint_jerk_rad_s3=None, joint_tolerance=None, converge_timeout=None, stream=false))]
     fn set_robot_state(
         &mut self,
         target_joints: Option<Vec<f64>>,
@@ -232,6 +233,7 @@ impl PyRobot {
         max_joint_jerk_rad_s3: Option<f64>,
         joint_tolerance: Option<f64>,
         converge_timeout: Option<f64>,
+        stream: bool,
     ) -> PyResult<bool> {
         self.inner_mut()?
             .set_robot_state(
@@ -244,6 +246,7 @@ impl PyRobot {
                 converge_timeout,
                 max_joint_accel_rad_s2,
                 max_joint_jerk_rad_s3,
+                stream,
             )
             .map_err(map_err)
     }
@@ -308,16 +311,19 @@ struct PyArm {
 #[pymethods]
 impl PyArm {
     #[new]
-    #[pyo3(signature = (port=None, baud=DEFAULT_BAUD, enable_gripper=false, arm_control_mode=DEFAULT_ARM_CONTROL_MODE))]
+    #[pyo3(signature = (port=None, baud=DEFAULT_BAUD, enable_gripper=false, arm_control_mode=DEFAULT_ARM_CONTROL_MODE, config_path=None))]
     fn new(
         port: Option<&str>,
         baud: u32,
         enable_gripper: bool,
         arm_control_mode: &str,
+        config_path: Option<&str>,
     ) -> PyResult<Self> {
+        let hw_yaml = config_path.map(std::path::Path::new);
+        let config = default_config(port, Some(baud), 100.0, arm_control_mode, hw_yaml)
+            .map_err(map_err)?;
         Ok(Self {
-            inner: ArxMCanArm::with_defaults(port, Some(baud), arm_control_mode, enable_gripper)
-                .map_err(map_err)?,
+            inner: ArxMCanArm::new(config, enable_gripper).map_err(map_err)?,
         })
     }
 

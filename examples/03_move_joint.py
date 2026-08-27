@@ -1,31 +1,22 @@
 #!/usr/bin/env python3
-"""Move arm to target joint positions."""
+"""Move arm to target joint positions.
+
+    python examples/03_move_joint.py --port /dev/ttyACM2 --robot arx --speed 60
+"""
 
 from __future__ import annotations
 
 import argparse
-import sys
-from pathlib import Path
 import time
-ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
 
-from api.synria_robot_api import create_robot
-
-from common import add_connection_arguments
+from common import add_robot_arguments, make_robot
 
 
 def main(args: argparse.Namespace) -> None:
     target = [float(v) for v in args.joints.split(",")]
-    robot = create_robot(port=args.port, baud=args.baud)
+    robot = make_robot(args)
     try:
-        robot.set_robot_state(
-            target_joints=target,
-            joint_format="rad",
-            speed=args.speed,
-            wait_for_completion=True,
-        )
+        robot.set_robot_state(target_joints=target, speed=args.speed, wait_for_completion=True)
         time.sleep(1)
         print([float(q) for q in robot.get_robot_state("joint")[:6]])
     finally:
@@ -41,5 +32,5 @@ if __name__ == "__main__":
         default="0,-0.2,0.0,0,0,0",
         help="Comma-separated joint targets (rad)",
     )
-    add_connection_arguments(parser)
+    add_robot_arguments(parser)
     main(parser.parse_args())

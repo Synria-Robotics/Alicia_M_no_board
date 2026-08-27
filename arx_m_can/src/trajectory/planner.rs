@@ -48,6 +48,35 @@ impl JointTrajectoryPlanner {
         })
     }
 
+    /// Keep current `q/dq/ddq` and replan toward a new goal (online teleop).
+    pub fn retarget(
+        &mut self,
+        q_goal: &[f64],
+        dq_goal: Option<&[f64]>,
+        limits: &TrajectoryLimits,
+    ) {
+        self.apply_limits(limits);
+        let n = self.dof.min(q_goal.len());
+        for i in 0..n {
+            let vmax = self.input.max_velocity[i];
+            self.input.target_position[i] = q_goal[i];
+            let dq = dq_goal.and_then(|d| d.get(i).copied()).unwrap_or(0.0);
+            self.input.target_velocity[i] = dq.clamp(-vmax, vmax);
+            self.input.target_acceleration[i] = 0.0;
+        }
+        self.goal = q_goal.iter().take(self.dof).copied().collect();
+        self.finished = false;
+    }
+
+    fn apply_limits(&mut self, limits: &TrajectoryLimits) {
+        for i in 0..self.dof {
+            self.input.max_velocity[i] = limits.max_velocity.get(i).copied().unwrap_or(0.0).max(1e-6);
+            self.input.max_acceleration[i] =
+                limits.max_acceleration.get(i).copied().unwrap_or(0.0).max(1e-6);
+            self.input.max_jerk[i] = limits.max_jerk.get(i).copied().unwrap_or(0.0).max(1e-6);
+        }
+    }
+
     pub fn step(&mut self) -> Result<(Vec<f64>, Vec<f64>, bool)> {
         if self.finished {
             let q = self.goal.clone();
@@ -108,6 +137,38 @@ mod tests {
             }
         }
         for (q, g) in last_q.iter().zip(goal.iter()) {
+            assert!((q - g).abs() < 1e-3);
+        }
+    }
+
+    #[test]
+    fn retarget_reaches_new_goal_from_current_state() {
+        let limits = TrajectoryLimits {
+            max_velocity: vec![1.0; 6],
+            max_acceleration: vec![8.0; 6],
+            max_jerk: vec![50.0; 6],
+        };
+        let start = vec![0.0; 6];
+        let mut planner =
+            JointTrajectoryPlanner::new(&start, &[0.8; 6], &[], &limits, 500.0).unwrap();
+        for _ in 0..40 {
+            let _ = planner.step().unwrap();
+        }
+        let new_goal = vec![0.15; 6];
+        planner.retarget(&new_goal, None, &limits);
+        let mut last_q = start;
+        let mut done = false;
+        for _ in 0..5000 {
+            let (q, dq, finished) = planner.step().unwrap();
+            last_q = q;
+            assert!(dq.iter().all(|v| v.abs() <= limits.max_velocity[0] + 1e-6));
+            if finished {
+                done = true;
+                break;
+            }
+        }
+        assert!(done);
+        for (q, g) in last_q.iter().zip(new_goal.iter()) {
             assert!((q - g).abs() < 1e-3);
         }
     }

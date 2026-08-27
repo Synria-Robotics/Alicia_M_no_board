@@ -7,7 +7,7 @@ Uses Ruckig jerk-limited trajectories in the 500 Hz refresh loop with gravity FF
     cd /home/ubuntu/Synria/arx/Rust/arx_m_can
     maturin develop --release
     python examples/10_verify_poses.py
-    python examples/10_verify_poses.py --speed 60 --motion-tolerance 0.02
+    python examples/10_verify_poses.py --port /dev/ttyACM1 --speed 60 --motion-tolerance 0.02
 
     # Follower arm (robot scales, dynamics JSON, and MIT gains)
     python examples/10_verify_poses.py --robot follower
@@ -24,17 +24,12 @@ from common import (
     DEFAULT_POSES,
     add_robot_arguments,
     at_target,
-    ensure_native_path,
     fmt_joints,
     hold_stats,
     joint_errors,
     load_poses,
-    resolve_robot_setup,
-    robot_gravity_kwargs,
+    make_robot,
 )
-
-ensure_native_path()
-import _native  # noqa: E402
 
 
 def worst_joint(q_meas: list[float], q_des: list[float]) -> tuple[int, float]:
@@ -71,20 +66,13 @@ def main() -> int:
     args = p.parse_args()
 
     poses = load_poses(args.poses)
-    setup = resolve_robot_setup(args)
-    robot = _native.Robot(
+    robot = make_robot(
+        args,
         wait_tolerance_rad=args.motion_tolerance,
         wait_timeout_sec=args.converge_timeout,
-        **robot_gravity_kwargs(setup),
     )
 
-    print(f"{len(poses)} poses from {args.poses.name}")
-    if setup.robot:
-        print(f"robot={setup.robot}")
-    if setup.config_path:
-        print(f"config={setup.config_path.name}")
-    if setup.dynamics_model_path:
-        print(f"dynamics={setup.dynamics_model_path.name}")
+    print(f"{len(poses)} poses from {args.poses.name}  robot={args.robot}")
     print("Mode: MIT + Ruckig trajectory + gravity FF")
     kp, kd = robot.get_arm_mit_gains()
     print(f"Kp={[round(x, 1) for x in kp[:6]]}  Kd={[round(x, 1) for x in kd[:6]]}")

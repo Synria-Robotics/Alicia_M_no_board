@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Alicia-D leader → ARX-M-CAN follower teleoperation.
 
-Uses the Rust ``Teleoperation`` loop with built-in Alicia-D → Alicia-M joint
-mapping and Ruckig jerk-limited trajectories.
+Uses the Rust ``Teleoperation`` loop with Alicia-D → Alicia-M joint mapping
+and MIT hold streaming (no per-tick Ruckig restarts).
 
 Examples:
   python examples/14_teleop_alicia_d_leader.py
@@ -14,16 +14,12 @@ Examples:
 from __future__ import annotations
 
 import argparse
-import sys
-from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
-
+from common import DEFAULT_BAUD, DEFAULT_PORT
 import alicia_d_sdk
 
-from api.synria_robot_api import DEFAULT_BAUD, Teleoperation, create_robot
+from api.profiles import DEFAULT_PROFILE, PROFILE_NAMES
+from api.synria_robot_api import Teleoperation, create_robot
 
 
 def main(args: argparse.Namespace) -> None:
@@ -31,7 +27,7 @@ def main(args: argparse.Namespace) -> None:
     if not leader.is_connected():
         raise SystemExit(f"leader connect failed: {args.leader_port!r}")
 
-    follower = create_robot(port=args.follower_port, baud=args.baud)
+    follower = create_robot(port=args.follower_port, baud=args.baud, robot=args.robot)
     try:
         if args.home:
             print("Moving follower to home...")
@@ -70,7 +66,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Alicia-D leader → ARX-M-CAN follower teleoperation",
     )
-    parser.add_argument("--leader-port", default="/dev/ttyACM0", help="Alicia-D leader serial port")
+    parser.add_argument("--leader-port", default=DEFAULT_PORT, help="Alicia-D leader serial port")
     parser.add_argument(
         "--follower-port",
         default="/dev/ttyACM2",
@@ -86,6 +82,12 @@ if __name__ == "__main__":
     )
     parser.add_argument("--gripper-scale", type=float, default=1.0, help="Leader → follower gripper scale")
     parser.add_argument("--baud", type=int, default=DEFAULT_BAUD, help="Follower USB2CAN baudrate")
+    parser.add_argument(
+        "--robot",
+        choices=PROFILE_NAMES,
+        default=DEFAULT_PROFILE,
+        help="ARX-M-CAN follower variant",
+    )
     parser.add_argument("--home", action="store_true", help="Move follower to zero before teleop")
     parser.add_argument("--home-speed", type=float, default=40.0, help="Home motion speed [0,400]")
     parser.add_argument(

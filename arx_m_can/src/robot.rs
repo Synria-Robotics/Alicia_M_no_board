@@ -9,7 +9,9 @@ use crate::dynamics::{GravityCompConfig, GravityCompensator};
 use crate::error::{ArxError, Result};
 use crate::hardware::ArxMCanArm;
 use crate::trajectory::governor::{ReferenceGovernor, DEFAULT_TORQUE_MARGIN};
-use crate::trajectory::{build_trajectory_limits_from_vlim, needs_trajectory};
+use crate::trajectory::{
+    build_stream_limits_from_vlim, build_trajectory_limits_from_vlim, needs_trajectory,
+};
 use crate::types::{ArxMCanState, MotorDiagnostic, VlimInput};
 use crate::utils::gripper::validate_gripper_value;
 use crate::utils::speed_mapping::speed_to_vlim_rad_s;
@@ -275,6 +277,7 @@ impl ArxMCanRobot {
         converge_timeout: Option<f64>,
         max_joint_accel_rad_s2: Option<f64>,
         max_joint_jerk_rad_s3: Option<f64>,
+        stream: bool,
     ) -> Result<bool> {
         let mut joints_converged = true;
         if let Some(target) = target_joints {
@@ -291,6 +294,7 @@ impl ArxMCanRobot {
                     wait_for_completion,
                     max_joint_accel_rad_s2,
                     max_joint_jerk_rad_s3,
+                    stream,
                 )?;
             }
         }
@@ -348,6 +352,7 @@ impl ArxMCanRobot {
             None,
             None,
             None,
+            false,
         )?;
         Ok(())
     }
@@ -363,6 +368,7 @@ impl ArxMCanRobot {
         lock_arm(&self.arm)?.close(false)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn move_arm_joints(
         &mut self,
         target: &[f64],
@@ -372,7 +378,21 @@ impl ArxMCanRobot {
         wait_for_completion: bool,
         max_joint_accel_rad_s2: Option<f64>,
         max_joint_jerk_rad_s3: Option<f64>,
+        stream: bool,
     ) -> Result<bool> {
+        if stream {
+            self.stream_arm_joints(
+                target,
+                vlim,
+                max_joint_accel_rad_s2,
+                max_joint_jerk_rad_s3,
+            )?;
+            if wait_for_completion {
+                return wait_until_at_target(&self.arm, target, tolerance, timeout, 0.01);
+            }
+            return Ok(true);
+        }
+
         let state = lock_arm(&self.arm)?.read_state(true)?;
         let q_meas: Vec<f64> = state.arm.positions.iter().take(NUM_ARM_JOINTS).copied().collect();
         let dq_meas: Vec<f64> = state
@@ -451,7 +471,6 @@ impl ArxMCanRobot {
 
     fn resume_refresh_loop(&mut self) {
         if let Some(ref refresh) = self.refresh {
-            refresh.set_hold(self.commanded_joints.clone(), self.command_vlim);
             refresh.resume();
         }
     }
@@ -495,10 +514,36 @@ impl ArxMCanRobot {
         compute_gravity_ff(&guard, self.gravity.as_ref(), joints)
     }
 
+    /// Stream latest `q*` through Ruckig (retarget from current q/dq, speed-scaled limits).
+    fn stream_arm_joints(
+        &mut self,
+        target: &[f64],
+        vlim: f64,
+        max_joint_accel_rad_s2: Option<f64>,
+        max_joint_jerk_rad_s3: Option<f64>,
+    ) -> Result<()> {
+        if let Some(ref refresh) = self.refresh {
+            let joint_cfgs = lock_arm(&self.arm)?.config().arm_joints.clone();
+            let limits = build_stream_limits_from_vlim(
+                NUM_ARM_JOINTS,
+                vlim,
+                &joint_cfgs,
+                max_joint_accel_rad_s2,
+                max_joint_jerk_rad_s3,
+            );
+            refresh.set_hold(target.to_vec(), vlim, Some(limits));
+            self.commanded_joints = target.to_vec();
+            self.command_vlim = vlim;
+            return Ok(());
+        }
+        self.send_joints_direct(target, vlim)
+    }
+
+    /// Freeze MIT Hold at `positions` (no Ruckig). Used for enable/startup and already-at-target.
     fn send_joints_direct(&mut self, positions: &[f64], vlim: f64) -> Result<()> {
         if self.mit_mode {
             if let Some(ref refresh) = self.refresh {
-                refresh.set_hold(positions.to_vec(), vlim);
+                refresh.set_hold(positions.to_vec(), vlim, None);
             } else {
                 let zeros = vec![0.0; positions.len()];
                 let tau_ff = self.gravity_ff_for(positions);

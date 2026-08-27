@@ -1,43 +1,22 @@
 #!/usr/bin/env python3
 """Inverse kinematics demo (RoboCore IK + MIT motion).
 
-    python examples/07_inverse_kinematics.py --execute
-    python examples/07_inverse_kinematics.py --robot follower --execute
-    python examples/07_inverse_kinematics.py --robot px6d --execute --speed 60
+    python examples/07_inverse_kinematics.py --robot arx --port /dev/ttyACM2 --execute
 """
 
 from __future__ import annotations
 
 import argparse
-import sys
-from pathlib import Path
 
 import numpy as np
 
-ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
-
-from api.synria_robot_api import create_robot
-
-from common import add_connection_arguments, add_robot_arguments, resolve_robot_setup, synria_robot_kwargs
+from common import add_robot_arguments, make_robot
 
 
 def main(args: argparse.Namespace) -> None:
-    setup = resolve_robot_setup(args)
-    robot = create_robot(
-        port=args.port,
-        baud=args.baud,
-        auto_enable=args.execute,
-        **synria_robot_kwargs(setup),
-    )
+    robot = make_robot(args, auto_enable=args.execute)
     try:
-        if setup.robot:
-            print(f"robot={setup.robot}")
-        if setup.urdf_path:
-            print(f"urdf={setup.urdf_path.name}")
-        if setup.config_path:
-            print(f"config={setup.config_path.name}")
+        print(f"port={args.port} robot={args.robot}")
         result = robot.set_pose(
             args.end_pose,
             method=args.method,
@@ -51,11 +30,25 @@ def main(args: argparse.Namespace) -> None:
             speed=args.speed,
             execute=args.execute,
             force_execute=args.force_execute,
+            joint_tolerance=args.joint_tolerance,
+            converge_timeout=args.converge_timeout,
         )
-        print(f"success={result.get('success')}  motion={result.get('motion_executed')}")
+        print(
+            f"success={result.get('success')}  motion={result.get('motion_executed')}  "
+            f"converged={result.get('motion_converged')}"
+        )
         if result.get("q") is not None:
-            print("q (rad):", np.round(result["q"], 4))
-            print("q (deg):", np.round(np.rad2deg(result["q"]), 2))
+            q = np.asarray(result["q"])
+            print("q (rad):", np.round(q, 4))
+            print("q (deg):", np.round(np.rad2deg(q), 2))
+            if args.execute:
+                import time
+                time.sleep(0.5)
+                measured = np.asarray(robot.get_joint_positions()[:6])
+                error = measured - q
+                print("measured (rad):", np.round(measured, 4))
+                print("error (deg):", np.round(np.rad2deg(error), 3))
+                print(f"max error: {np.max(np.abs(np.rad2deg(error))):.3f} deg")
         if not result.get("success"):
             print("message:", result.get("message"))
     finally:
@@ -68,7 +61,9 @@ if __name__ == "__main__":
         "--end-pose",
         type=float,
         nargs=7,
-        default=[0.219497, -0.000911, 0.15941, 0.774915, -0.001942, 0.632059, 0.002071],
+        # default=[-0.096482,0.129968, 0.200093, -0.613277, 0.356364, 0.657447, 0.254283],
+        default=[0.255244, -0.021179, 0.085898, -0.025246, 0.988857, -0.055947, 0.135626],
+        # default=[0.175549, -0.001191, 0.205638, 0.001149, 0.705012, -0.005067, 0.709176],
         help="Target [x y z qx qy qz qw]",
     )
     parser.add_argument("--method", default="dls", choices=["dls", "pinv", "transpose"])
@@ -84,8 +79,9 @@ if __name__ == "__main__":
     parser.add_argument("--init-scale", type=float, default=1.0)
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--speed", type=float, default=60.0)
+    parser.add_argument("--joint-tolerance", type=float, default=0.005)
+    parser.add_argument("--converge-timeout", type=float, default=6.0)
     parser.add_argument("--execute", action="store_true")
     parser.add_argument("--force-execute", action="store_true")
-    add_connection_arguments(parser)
     add_robot_arguments(parser)
     main(parser.parse_args())
