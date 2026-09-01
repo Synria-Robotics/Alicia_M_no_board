@@ -128,6 +128,7 @@ def main() -> int:
                 target_joints=q_des,
                 speed=args.speed,
                 wait_for_completion=True,
+                stream=False,
                 joint_tolerance=args.motion_tolerance,
                 converge_timeout=args.converge_timeout,
             )

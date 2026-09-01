@@ -15,9 +15,9 @@ from common import add_robot_arguments, make_robot
 def main(args: argparse.Namespace) -> None:
     robot = make_robot(args)
     try:
-        robot.set_gripper_target(command="open", speed=args.speed)
+        robot.set_robot_state(gripper_value=1000.0, gripper_speed=args.speed, wait_for_completion=True)
         time.sleep(0.5)
-        robot.set_gripper_target(command="close", speed=args.speed)
+        robot.set_robot_state(gripper_value=0.0, gripper_speed=args.speed, wait_for_completion=True)
     finally:
         robot.disconnect()
 

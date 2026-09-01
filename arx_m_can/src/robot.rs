@@ -9,9 +9,7 @@ use crate::dynamics::{GravityCompConfig, GravityCompensator};
 use crate::error::{ArxError, Result};
 use crate::hardware::ArxMCanArm;
 use crate::trajectory::governor::{ReferenceGovernor, DEFAULT_TORQUE_MARGIN};
-use crate::trajectory::{
-    build_stream_limits_from_vlim, build_trajectory_limits_from_vlim, needs_trajectory,
-};
+use crate::trajectory::{build_trajectory_limits_from_vlim, needs_trajectory};
 use crate::types::{ArxMCanState, MotorDiagnostic, VlimInput};
 use crate::utils::gripper::validate_gripper_value;
 use crate::utils::speed_mapping::speed_to_vlim_rad_s;
@@ -25,6 +23,8 @@ pub const DEFAULT_ARM_CONTROL_MODE: &str = "mit";
 pub const DEFAULT_MAX_JOINT_VEL_RAD_S: f64 = 3.0;
 pub const DEFAULT_JOINT_SPEED: f64 = 400.0;
 pub const DEFAULT_GRIPPER_SPEED: f64 = 100.0;
+pub const DEFAULT_GRIPPER_WAIT_TOLERANCE: f64 = 20.0;
+pub const DEFAULT_GRIPPER_WAIT_TIMEOUT_SEC: f64 = 5.0;
 pub const DEFAULT_WAIT_TOLERANCE_RAD: f64 = 0.02;
 pub const DEFAULT_WAIT_TIMEOUT_SEC: f64 = 15.0;
 pub const HOME_JOINTS: [f64; NUM_ARM_JOINTS] = [0.0; NUM_ARM_JOINTS];
@@ -265,6 +265,13 @@ impl ArxMCanRobot {
         self.commanded_joints.clone()
     }
 
+    /// MIT freeze at `positions` (`dq = 0`, no walker). Sit-still / enable.
+    pub fn hold_arm_joints(&mut self, positions: &[f64], speed: f64) -> Result<()> {
+        let target: Vec<f64> = positions.iter().take(NUM_ARM_JOINTS).copied().collect();
+        let vlim = self.vlim_from_speed(speed);
+        self.send_joints_direct(&target, vlim)
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn set_robot_state(
         &mut self,
@@ -278,19 +285,19 @@ impl ArxMCanRobot {
         max_joint_accel_rad_s2: Option<f64>,
         max_joint_jerk_rad_s3: Option<f64>,
         stream: bool,
+        gripper_tolerance: Option<f64>,
+        gripper_timeout_sec: Option<f64>,
     ) -> Result<bool> {
         let mut joints_converged = true;
-        if let Some(target) = target_joints {
-            let target: Vec<f64> = target.iter().take(NUM_ARM_JOINTS).copied().collect();
+        if let Some(joints) = target_joints {
+            let target: Vec<f64> = joints.iter().take(NUM_ARM_JOINTS).copied().collect();
             let vlim = self.vlim_from_speed(speed);
             if vlim > 0.0 {
-                let tol = joint_tolerance.unwrap_or(self.wait_tolerance_rad);
-                let timeout = converge_timeout.unwrap_or(self.wait_timeout_sec);
                 joints_converged = self.move_arm_joints(
                     &target,
                     vlim,
-                    tol,
-                    timeout,
+                    joint_tolerance.unwrap_or(self.wait_tolerance_rad),
+                    converge_timeout.unwrap_or(self.wait_timeout_sec),
                     wait_for_completion,
                     max_joint_accel_rad_s2,
                     max_joint_jerk_rad_s3,
@@ -298,47 +305,19 @@ impl ArxMCanRobot {
                 )?;
             }
         }
+        let mut gripper_ok = true;
         if let Some(value) = gripper_value {
-            lock_arm(&self.arm)?.set_gripper(
+            gripper_ok = lock_arm(&self.arm)?.set_gripper(
                 validate_gripper_value(value),
                 gripper_speed,
                 Some(self.control_hz),
                 true,
                 wait_for_completion,
-                20.0,
-                5.0,
+                gripper_tolerance.unwrap_or(DEFAULT_GRIPPER_WAIT_TOLERANCE),
+                gripper_timeout_sec.unwrap_or(DEFAULT_GRIPPER_WAIT_TIMEOUT_SEC),
             )?;
         }
-        Ok(joints_converged)
-    }
-
-    pub fn set_gripper_target(
-        &mut self,
-        command: Option<&str>,
-        value: Option<f64>,
-        speed: f64,
-        wait_for_completion: bool,
-    ) -> Result<bool> {
-        let value = match (command, value) {
-            (Some("open"), _) => 1000.0,
-            (Some("close"), _) => 0.0,
-            (_, Some(value)) => value,
-            _ => {
-                return Err(ArxError::InvalidArgument(
-                    "set_gripper_target requires command='open'|'close' or value=[0,1000]"
-                        .into(),
-                ));
-            }
-        };
-        lock_arm(&self.arm)?.set_gripper(
-            validate_gripper_value(value),
-            speed,
-            Some(self.control_hz),
-            true,
-            wait_for_completion,
-            20.0,
-            5.0,
-        )
+        Ok(joints_converged && (gripper_ok || !wait_for_completion))
     }
 
     pub fn go_home(&mut self, speed: f64) -> Result<()> {
@@ -353,14 +332,13 @@ impl ArxMCanRobot {
             None,
             None,
             false,
+            None,
+            None,
         )?;
         Ok(())
     }
 
     pub fn disconnect(&mut self) -> Result<()> {
-        // if self.mit_mode && self.enabled && lock_arm(&self.arm)?.connected() {
-        //     let _ = self.go_home(60.0);
-        // }
         if let Some(ref mut refresh) = self.refresh {
             refresh.stop();
         }
@@ -381,12 +359,7 @@ impl ArxMCanRobot {
         stream: bool,
     ) -> Result<bool> {
         if stream {
-            self.stream_arm_joints(
-                target,
-                vlim,
-                max_joint_accel_rad_s2,
-                max_joint_jerk_rad_s3,
-            )?;
+            self.stream_arm_joints(target, vlim)?;
             if wait_for_completion {
                 return wait_until_at_target(&self.arm, target, tolerance, timeout, 0.01);
             }
@@ -514,24 +487,10 @@ impl ArxMCanRobot {
         compute_gravity_ff(&guard, self.gravity.as_ref(), joints)
     }
 
-    /// Stream latest `q*` through Ruckig (retarget from current q/dq, speed-scaled limits).
-    fn stream_arm_joints(
-        &mut self,
-        target: &[f64],
-        vlim: f64,
-        max_joint_accel_rad_s2: Option<f64>,
-        max_joint_jerk_rad_s3: Option<f64>,
-    ) -> Result<()> {
+    /// Latch latest `q*` for the 500 Hz FOH walker (coast at sample velocity).
+    fn stream_arm_joints(&mut self, target: &[f64], vlim: f64) -> Result<()> {
         if let Some(ref refresh) = self.refresh {
-            let joint_cfgs = lock_arm(&self.arm)?.config().arm_joints.clone();
-            let limits = build_stream_limits_from_vlim(
-                NUM_ARM_JOINTS,
-                vlim,
-                &joint_cfgs,
-                max_joint_accel_rad_s2,
-                max_joint_jerk_rad_s3,
-            );
-            refresh.set_hold(target.to_vec(), vlim, Some(limits));
+            refresh.set_stream_goal(target.to_vec(), vlim);
             self.commanded_joints = target.to_vec();
             self.command_vlim = vlim;
             return Ok(());
@@ -539,11 +498,11 @@ impl ArxMCanRobot {
         self.send_joints_direct(target, vlim)
     }
 
-    /// Freeze MIT Hold at `positions` (no Ruckig). Used for enable/startup and already-at-target.
+    /// Freeze MIT at `positions` (no walker). Used for enable/startup and already-at-target.
     fn send_joints_direct(&mut self, positions: &[f64], vlim: f64) -> Result<()> {
         if self.mit_mode {
             if let Some(ref refresh) = self.refresh {
-                refresh.set_hold(positions.to_vec(), vlim, None);
+                refresh.set_hold(positions.to_vec(), vlim);
             } else {
                 let zeros = vec![0.0; positions.len()];
                 let tau_ff = self.gravity_ff_for(positions);

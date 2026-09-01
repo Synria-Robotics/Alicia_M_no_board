@@ -16,6 +16,7 @@ def main(args: argparse.Namespace) -> None:
     try:
         robot.go_home(speed=args.speed)
     finally:
+        robot.disable()
         robot.disconnect()
 
 

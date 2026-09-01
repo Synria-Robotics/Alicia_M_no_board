@@ -2,7 +2,7 @@
 """Alicia-D leader → ARX-M-CAN follower teleoperation.
 
 Uses the Rust ``Teleoperation`` loop with Alicia-D → Alicia-M joint mapping
-and MIT hold streaming (no per-tick Ruckig restarts).
+and MIT stream latching (500 Hz ``q_des`` walker, no per-tick Ruckig).
 
 Examples:
   python examples/14_teleop_alicia_d_leader.py

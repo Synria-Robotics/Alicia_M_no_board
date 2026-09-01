@@ -94,7 +94,7 @@ joints:
     model: "4310"
     MIT:
       kp: 33.0
-      kd: 0.5
+      kd: 1.2
     POS_VEL:
       vel_kp: 0.0008
       vel_ki: 0.002

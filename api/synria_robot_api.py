@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import re
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -37,6 +38,35 @@ def _to_rad(values: Sequence[float], joint_format: str) -> list[float]:
     if joint_format == "deg":
         return [float(math.radians(v)) for v in values[:NUM_ARM_JOINTS]]
     return [float(v) for v in values[:NUM_ARM_JOINTS]]
+
+
+_UNEXPECTED_KWARG = re.compile(r"unexpected keyword argument ['\"](\w+)['\"]")
+
+
+def _construct_native(cls: Any, kwargs: dict[str, Any]) -> Any:
+    """Build a pyo3 class, dropping kwargs the installed ``_native`` binary does not accept."""
+    pending = dict(kwargs)
+    while True:
+        try:
+            return cls(**pending)
+        except TypeError as exc:
+            match = _UNEXPECTED_KWARG.search(str(exc))
+            if match is None or match.group(1) not in pending:
+                raise
+            pending.pop(match.group(1))
+
+
+def _invoke_native(fn: Any, *args: Any) -> Any:
+    """Call a native method, dropping trailing positional args the binary does not accept."""
+    pending = list(args)
+    while True:
+        try:
+            return fn(*pending)
+        except TypeError as exc:
+            msg = str(exc)
+            if "positional argument" not in msg or len(pending) == 0:
+                raise
+            pending.pop()
 
 
 class SynriaRobotAPI:
@@ -82,7 +112,9 @@ class SynriaRobotAPI:
             kwargs["gravity_model_path"] = str(gravity_model_path)
         if config_path is not None:
             kwargs["config_path"] = str(config_path)
-        self._robot = _native.Robot(**kwargs)
+        self._wait_tolerance_rad = float(wait_tolerance_rad)
+        self._wait_timeout_sec = float(wait_timeout_sec)
+        self._robot = _construct_native(_native.Robot, kwargs)
 
     @property
     def arm_control_mode(self) -> str:
@@ -125,12 +157,15 @@ class SynriaRobotAPI:
         joint_tolerance: float | None = None,
         converge_timeout: float | None = None,
         stream: bool = False,
+        gripper_tolerance: float | None = None,
+        gripper_timeout_sec: float | None = None,
         **_: Any,
     ) -> bool:
-        """Command joints. ``stream=True`` retargets Ruckig from current q/dq (no encoder restart)."""
+        """Command joints. ``stream=False`` + wait is Ruckig P2P; ``stream=True`` is the 500 Hz walker."""
         joints = None if target_joints is None else _to_rad(target_joints, joint_format)
         return bool(
-            self._robot.set_robot_state(
+            _invoke_native(
+                self._robot.set_robot_state,
                 joints,
                 gripper_value,
                 float(speed),
@@ -141,6 +176,30 @@ class SynriaRobotAPI:
                 joint_tolerance,
                 converge_timeout,
                 bool(stream),
+                gripper_tolerance,
+                gripper_timeout_sec,
+            )
+        )
+
+    def hold_arm_joints(
+        self,
+        target_joints: Sequence[float],
+        *,
+        speed: float = DEFAULT_JOINT_SPEED,
+        joint_format: str = "rad",
+    ) -> bool:
+        """MIT freeze at ``target_joints`` (no walker). Sit-still / enable."""
+        joints = _to_rad(target_joints, joint_format)
+        native = getattr(self._robot, "hold_arm_joints", None)
+        if callable(native):
+            native(joints, float(speed))
+            return True
+        return bool(
+            self.set_robot_state(
+                joints,
+                speed=speed,
+                wait_for_completion=False,
+                stream=True,
             )
         )
 
@@ -191,6 +250,11 @@ class SynriaRobotAPI:
             q0 = self.get_ik_seed_joints()
             strategy = "random"
 
+        if "q_prev" not in ik_kwargs:
+            prev = getattr(self, "_ik_q_prev", None)
+            ik_kwargs["q_prev"] = prev if prev is not None else q0
+        ik_kwargs.setdefault("ema_state", self)
+
         result = _kinematics.inverse_kinematics(
             self.robot_model,
             target_pose,
@@ -206,6 +270,9 @@ class SynriaRobotAPI:
             **ik_kwargs,
         )
         q = result.get("q")
+        if q is not None:
+            # Latch even on near-miss so the next seed is not frozen (fail cascade).
+            self._ik_q_prev = list(q)[:NUM_ARM_JOINTS]
         executed = q is not None and execute and (result.get("success") or force_execute)
         converged = False
         if executed:
@@ -213,9 +280,9 @@ class SynriaRobotAPI:
                 q,
                 speed=speed,
                 wait_for_completion=wait_for_completion,
+                stream=not wait_for_completion,
                 joint_tolerance=joint_tolerance,
                 converge_timeout=converge_timeout,
-                stream=not wait_for_completion,
             )
         result["motion_executed"] = bool(executed)
         result["motion_converged"] = bool(converged)

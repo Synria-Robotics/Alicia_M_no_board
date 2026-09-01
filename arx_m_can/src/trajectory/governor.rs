@@ -12,8 +12,6 @@ pub struct ReferenceGovernor {
     kp: Vec<f64>,
     tmax: Vec<f64>,
     torque_margin: f64,
-    q_cmd_prev: Vec<f64>,
-    has_prev: bool,
 }
 
 impl ReferenceGovernor {
@@ -28,28 +26,26 @@ impl ReferenceGovernor {
                     .unwrap_or(10.0)
             })
             .collect();
-        let n = kp.len();
         Self {
             kp,
             tmax,
             torque_margin: margin,
-            q_cmd_prev: vec![0.0; n],
-            has_prev: false,
         }
     }
 
-    pub fn reset(&mut self) {
-        self.has_prev = false;
-    }
+    #[allow(clippy::unused_self)]
+    pub fn reset(&mut self) {}
 
-    /// Clamp ideal reference against measured joints so `Kp * (q_send - q_meas) + tau_ff` stays within `tmax`.
+    /// Clamp `q` near measured joints so `Kp * (q_send - q_meas) + tau_ff` stays within `tmax`.
+    ///
+    /// Returns the caller's `dq_ideal` unchanged (walker / Ruckig owns velocity).
     pub fn apply(
-        &mut self,
+        &self,
         q_ideal: &[f64],
         dq_ideal: &[f64],
         q_meas: &[f64],
         tau_ff: Option<&[f64]>,
-        dt: f64,
+        _dt: f64,
     ) -> (Vec<f64>, Vec<f64>) {
         let n = q_ideal.len();
         let mut q_send = vec![0.0; n];
@@ -72,20 +68,7 @@ impl ReferenceGovernor {
             let err_clamped = err.clamp(-eps_max, eps_max);
             q_send[i] = qm + err_clamped;
         }
-
-        let dq_send = if self.has_prev && dt > 0.0 {
-            q_send
-                .iter()
-                .zip(self.q_cmd_prev.iter())
-                .map(|(q, prev)| (q - prev) / dt)
-                .collect()
-        } else {
-            dq_ideal.to_vec()
-        };
-
-        self.q_cmd_prev = q_send.clone();
-        self.has_prev = true;
-        (q_send, dq_send)
+        (q_send, dq_ideal.to_vec())
     }
 }
 
@@ -112,7 +95,7 @@ mod tests {
 
     #[test]
     fn eps_max_from_tmax_and_kp() {
-        let mut gov = ReferenceGovernor::from_joint_configs(&[test_joint("4340P", 120.0)], 0.8);
+        let gov = ReferenceGovernor::from_joint_configs(&[test_joint("4340P", 120.0)], 0.8);
         let q_meas = vec![0.0];
         let q_ideal = vec![1.0];
         let (q_send, _) = gov.apply(&q_ideal, &[0.0], &q_meas, None, 0.002);
@@ -122,7 +105,7 @@ mod tests {
 
     #[test]
     fn no_clamp_when_error_small() {
-        let mut gov = ReferenceGovernor::from_joint_configs(&[test_joint("4310", 36.0)], 0.8);
+        let gov = ReferenceGovernor::from_joint_configs(&[test_joint("4310", 36.0)], 0.8);
         let q_meas = vec![0.0];
         let q_ideal = vec![0.05];
         let (q_send, _) = gov.apply(&q_ideal, &[0.1], &q_meas, None, 0.002);
@@ -130,8 +113,17 @@ mod tests {
     }
 
     #[test]
+    fn dq_ideal_passed_through_when_q_clamped() {
+        let gov = ReferenceGovernor::from_joint_configs(&[test_joint("4340P", 120.0)], 0.8);
+        let q_meas = vec![0.0];
+        let q_ideal = vec![1.0];
+        let (_, dq) = gov.apply(&q_ideal, &[0.3], &q_meas, None, 0.002);
+        assert!((dq[0] - 0.3).abs() < 1e-12);
+    }
+
+    #[test]
     fn feedforward_reduces_tracking_budget() {
-        let mut gov = ReferenceGovernor::from_joint_configs(&[test_joint("4340P", 120.0)], 1.0);
+        let gov = ReferenceGovernor::from_joint_configs(&[test_joint("4340P", 120.0)], 1.0);
         let q_meas = vec![0.0];
         let q_ideal = vec![1.0];
         let (q_send, _) = gov.apply(&q_ideal, &[0.0], &q_meas, Some(&[7.0]), 0.002);

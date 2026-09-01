@@ -221,7 +221,7 @@ impl PyRobot {
             .map_err(map_err)
     }
 
-    #[pyo3(signature = (target_joints=None, gripper_value=None, speed=400.0, gripper_speed=100.0, wait_for_completion=false, max_joint_accel_rad_s2=None, max_joint_jerk_rad_s3=None, joint_tolerance=None, converge_timeout=None, stream=false))]
+    #[pyo3(signature = (target_joints=None, gripper_value=None, speed=400.0, gripper_speed=100.0, wait_for_completion=false, max_joint_accel_rad_s2=None, max_joint_jerk_rad_s3=None, joint_tolerance=None, converge_timeout=None, stream=false, gripper_tolerance=None, gripper_timeout_sec=None))]
     fn set_robot_state(
         &mut self,
         target_joints: Option<Vec<f64>>,
@@ -234,6 +234,8 @@ impl PyRobot {
         joint_tolerance: Option<f64>,
         converge_timeout: Option<f64>,
         stream: bool,
+        gripper_tolerance: Option<f64>,
+        gripper_timeout_sec: Option<f64>,
     ) -> PyResult<bool> {
         self.inner_mut()?
             .set_robot_state(
@@ -247,20 +249,16 @@ impl PyRobot {
                 max_joint_accel_rad_s2,
                 max_joint_jerk_rad_s3,
                 stream,
+                gripper_tolerance,
+                gripper_timeout_sec,
             )
             .map_err(map_err)
     }
 
-    #[pyo3(signature = (command=None, value=None, speed=100.0, wait_for_completion=true))]
-    fn set_gripper_target(
-        &mut self,
-        command: Option<&str>,
-        value: Option<f64>,
-        speed: f64,
-        wait_for_completion: bool,
-    ) -> PyResult<bool> {
+    #[pyo3(signature = (target_joints, speed=80.0))]
+    fn hold_arm_joints(&mut self, target_joints: Vec<f64>, speed: f64) -> PyResult<()> {
         self.inner_mut()?
-            .set_gripper_target(command, value, speed, wait_for_completion)
+            .hold_arm_joints(&target_joints, speed)
             .map_err(map_err)
     }
 

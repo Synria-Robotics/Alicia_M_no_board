@@ -63,5 +63,28 @@ def inverse_kinematics(
     else:
         raise ValueError("target_pose must be length-7 [x,y,z,qx,qy,qz,qw] or 4x4 matrix")
 
+    solver = str(kwargs.pop("solver", "") or "").strip().lower()
+    cart_ema_pos = float(kwargs.pop("cart_ema_pos", 0.0) or 0.0)
+    cart_ema_rot = float(kwargs.pop("cart_ema_rot", 0.0) or 0.0)
+    ema_state = kwargs.pop("ema_state", None)
+    method = str(kwargs.get("method", "dls") or "dls").strip().lower()
+    if method == "analytic":
+        solver = "analytic"
+        kwargs["method"] = "dls"
+
+    if solver in ("analytic", "ssik"):
+        from .analytic import try_solve
+
+        q_seed = kwargs.get("q_prev", q0)
+        hit = try_solve(
+            T,
+            q_seed,
+            state=ema_state,
+            cart_ema_pos=cart_ema_pos,
+            cart_ema_rot=cart_ema_rot,
+        )
+        if hit is not None:
+            return hit
+
     result = rc_ik(robot_model, T, q0=q0, **kwargs)
     return result if isinstance(result, dict) else {"success": False, "q": None}

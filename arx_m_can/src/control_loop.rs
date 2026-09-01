@@ -1,23 +1,28 @@
-//! Periodic MIT/PV command refresh with optional gravity feedforward and Ruckig trajectories.
+//! Periodic MIT/PV command refresh with gravity feedforward.
 //!
-//! Stream Hold retargets Ruckig from the current `q/dq` toward the latest `q*`, with
-//! `vmax/amax/jmax` scaled from `slave_speed`. Discrete goto still uses StartTrajectory.
+//! Stream teleop latches `q_goal` and coasts `q_des` at the 60 Hz sample
+//! velocity (first-order hold + accel-limited `dq`; see `trajectory::walker`).
+//! Discrete goto still uses Ruckig `StartTrajectory`.
 
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use crate::dynamics::GravityCompensator;
 use crate::hardware::ArxMCanArm;
 use crate::trajectory::governor::ReferenceGovernor;
+use crate::trajectory::walker::{note_stream_goal, step_joint_des};
 use crate::trajectory::{JointTrajectoryPlanner, TrajectoryLimits};
 use crate::types::VlimInput;
 
 enum MotionCommand {
-    Hold {
+    Freeze {
         q: Vec<f64>,
         vlim: f64,
-        limits: Option<TrajectoryLimits>,
+    },
+    StreamGoal {
+        q: Vec<f64>,
+        vlim: f64,
     },
     StartTrajectory {
         q_start: Vec<f64>,
@@ -53,10 +58,9 @@ impl CommandRefreshLoop {
         governor: Option<ReferenceGovernor>,
     ) -> Self {
         let state = Arc::new(Mutex::new(LoopState {
-            command: Some(MotionCommand::Hold {
+            command: Some(MotionCommand::Freeze {
                 q: initial_joints.clone(),
                 vlim: initial_vlim,
-                limits: None,
             }),
             active: false,
             sent_commands: 0,
@@ -90,74 +94,67 @@ impl CommandRefreshLoop {
             .name("arx-m-can-refresh".into())
             .spawn(move || {
                 let mut planner: Option<JointTrajectoryPlanner> = None;
-                let mut hold_q = initial_joints;
+                let mut q_des = initial_joints.clone();
+                let mut q_goal = initial_joints;
                 let mut hold_vlim = initial_vlim;
                 let mut traj_vlim = initial_vlim;
-                let mut last_dq = vec![0.0; hold_q.len()];
-                let mut last_stream_goal: Option<(Instant, Vec<f64>)> = None;
+                let mut walk_vlim = initial_vlim;
+                let mut last_dq = vec![0.0; q_des.len()];
+                let mut v_stream = vec![0.0; q_des.len()];
+                let mut last_goal_at: Option<std::time::Instant> = None;
+                let mut goal_age = 0.0;
+                let mut walking = false;
 
                 while !*loop_stop.lock().unwrap() {
-                    let t0 = Instant::now();
+                    let t0 = std::time::Instant::now();
 
                     if let Some(cmd) = loop_state.lock().unwrap().command.take() {
                         match cmd {
-                            MotionCommand::Hold { q, vlim, limits } => {
+                            MotionCommand::Freeze { q, vlim } => {
+                                planner = None;
+                                walking = false;
+                                q_des = q.clone();
+                                q_goal = q;
+                                last_dq = vec![0.0; q_des.len()];
+                                v_stream = vec![0.0; q_des.len()];
+                                last_goal_at = None;
+                                goal_age = 0.0;
                                 hold_vlim = vlim;
-                                match limits.filter(|_| vlim > 0.0) {
-                                    None => {
-                                        planner = None;
-                                        hold_q = q;
-                                        last_dq = vec![0.0; hold_q.len()];
-                                        last_stream_goal = None;
-                                    }
-                                    Some(limits) => {
-                                        traj_vlim = vlim;
-                                        let dq_goal = stream_target_velocity(
-                                            last_stream_goal.as_ref(),
-                                            &q,
-                                            &limits.max_velocity,
-                                            t0,
-                                        );
-                                        last_stream_goal = Some((t0, q.clone()));
-                                        if let Some(p) = planner.as_mut() {
-                                            p.retarget(&q, Some(&dq_goal), &limits);
-                                        } else {
-                                            match JointTrajectoryPlanner::new(
-                                                &hold_q, &q, &last_dq, &limits, hz,
-                                            ) {
-                                                Ok(mut p) => {
-                                                    p.retarget(&q, Some(&dq_goal), &limits);
-                                                    planner = Some(p);
-                                                }
-                                                Err(_) => {
-                                                    let mut guard = loop_state.lock().unwrap();
-                                                    guard.send_errors += 1;
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
+                                walk_vlim = vlim;
+                            }
+                            MotionCommand::StreamGoal { q, vlim } => {
+                                planner = None;
+                                walking = true;
+                                walk_vlim = vlim;
+                                let now = std::time::Instant::now();
+                                let dt_goal = last_goal_at
+                                    .map(|t| now.duration_since(t).as_secs_f64())
+                                    .unwrap_or(1.0 / 60.0);
+                                let q = pad_to_len(q, q_des.len());
+                                note_stream_goal(&mut q_goal, &mut v_stream, &q, dt_goal, vlim);
+                                last_goal_at = Some(now);
+                                goal_age = 0.0;
                             }
                             MotionCommand::StartTrajectory {
                                 q_start,
-                                q_goal,
+                                q_goal: goal,
                                 dq_start,
                                 limits,
                                 vlim,
                             } => {
                                 traj_vlim = vlim;
-                                last_stream_goal = None;
+                                walking = false;
+                                v_stream.fill(0.0);
+                                last_goal_at = None;
+                                goal_age = 0.0;
                                 match JointTrajectoryPlanner::new(
-                                    &q_start,
-                                    &q_goal,
-                                    &dq_start,
-                                    &limits,
-                                    hz,
+                                    &q_start, &goal, &dq_start, &limits, hz,
                                 ) {
                                     Ok(p) => {
                                         if let Some(gov) = governor.as_mut() {
                                             gov.reset();
                                         }
+                                        q_goal = pad_to_len(goal, q_des.len());
                                         planner = Some(p);
                                     }
                                     Err(_) => {
@@ -175,18 +172,26 @@ impl CommandRefreshLoop {
                             let (q_ideal, dq_ideal, vlim) = if let Some(p) = planner.as_mut() {
                                 match p.step() {
                                     Ok((q, dq, _done)) => {
-                                        hold_q = q.clone();
+                                        q_des = q.clone();
                                         last_dq = dq.clone();
                                         (q, dq, traj_vlim)
                                     }
-                                    Err(_) => (hold_q.clone(), last_dq.clone(), traj_vlim),
+                                    Err(_) => (q_des.clone(), last_dq.clone(), traj_vlim),
                                 }
+                            } else if walking {
+                                let dq = step_joint_des(
+                                    &mut q_des,
+                                    &q_goal,
+                                    &mut last_dq,
+                                    &v_stream,
+                                    walk_vlim,
+                                    dt,
+                                    goal_age,
+                                );
+                                goal_age += dt;
+                                (q_des.clone(), dq, walk_vlim)
                             } else {
-                                (
-                                    hold_q.clone(),
-                                    vec![0.0; hold_q.len()],
-                                    hold_vlim,
-                                )
+                                (q_des.clone(), vec![0.0; q_des.len()], hold_vlim)
                             };
 
                             let mut arm = arm.lock().map_err(|_| ())?;
@@ -246,12 +251,14 @@ impl CommandRefreshLoop {
         guard.command = Some(command);
     }
 
-    pub fn set_hold(&self, joints: Vec<f64>, vlim: f64, limits: Option<TrajectoryLimits>) {
-        self.enqueue(MotionCommand::Hold {
-            q: joints,
-            vlim,
-            limits,
-        });
+    /// Freeze MIT at `joints` (`dq = 0`). Sit-still / enable / already-at-target.
+    pub fn set_hold(&self, joints: Vec<f64>, vlim: f64) {
+        self.enqueue(MotionCommand::Freeze { q: joints, vlim })
+    }
+
+    /// Latch teleop `q*` and coast `q_des` (FOH) at `vlim` on the refresh thread.
+    pub fn set_stream_goal(&self, joints: Vec<f64>, vlim: f64) {
+        self.enqueue(MotionCommand::StreamGoal { q: joints, vlim });
     }
 
     pub fn start_trajectory(
@@ -299,24 +306,13 @@ impl Drop for CommandRefreshLoop {
     }
 }
 
-fn stream_target_velocity(
-    prev: Option<&(Instant, Vec<f64>)>,
-    q: &[f64],
-    vmax: &[f64],
-    now: Instant,
-) -> Vec<f64> {
-    let Some((t, prev_q)) = prev else {
-        return vec![0.0; q.len()];
-    };
-    let dt = now.saturating_duration_since(*t).as_secs_f64().clamp(1e-3, 0.25);
-    q.iter()
-        .zip(prev_q.iter())
-        .enumerate()
-        .map(|(i, (next, prev))| {
-            let cap = vmax.get(i).copied().unwrap_or(0.0).max(0.0);
-            ((next - prev) / dt).clamp(-cap, cap)
-        })
-        .collect()
+fn pad_to_len(mut q: Vec<f64>, n: usize) -> Vec<f64> {
+    if q.len() < n {
+        q.resize(n, 0.0);
+    } else if q.len() > n {
+        q.truncate(n);
+    }
+    q
 }
 
 pub(crate) fn compute_gravity_ff(
@@ -333,25 +329,4 @@ pub(crate) fn compute_gravity_ff(
         .compute_arm_gravity_ff(measured, gripper_q)
         .ok()
         .or_else(|| guard.compute_arm_gravity_ff(target_joints, gripper_q).ok())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::stream_target_velocity;
-    use std::time::{Duration, Instant};
-
-    #[test]
-    fn stream_velocity_clamps_to_vmax() {
-        let t0 = Instant::now();
-        let prev = (t0, vec![0.0]);
-        let now = t0 + Duration::from_millis(16);
-        let dq = stream_target_velocity(Some(&prev), &[1.0], &[0.3], now);
-        assert!((dq[0] - 0.3).abs() < 1e-12);
-    }
-
-    #[test]
-    fn stream_velocity_zero_on_first_target() {
-        let dq = stream_target_velocity(None, &[0.2], &[1.0], Instant::now());
-        assert_eq!(dq, vec![0.0]);
-    }
 }

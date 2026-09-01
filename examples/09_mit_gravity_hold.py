@@ -78,7 +78,7 @@ def main() -> int:
             print(line, end="\r", flush=True)
             time.sleep(1.0 / max(args.log_hz, 0.1))
     finally:
-        robot.disable()
+        # robot.disable()
         robot.disconnect()
         print()
 

@@ -451,9 +451,6 @@ impl ArxMCanArm {
             hz,
             require_enabled,
         )?;
-        if !wait {
-            return Ok(true);
-        }
         self.wait_until_gripper_at_target(validate_gripper_value(value), tolerance, timeout, 0.01)
     }
 
