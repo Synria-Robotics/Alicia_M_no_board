@@ -41,6 +41,7 @@ def worst_joint(q_meas: list[float], q_des: list[float]) -> tuple[int, float]:
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--poses", type=Path, default=DEFAULT_POSES)
+    print("default poses: ", DEFAULT_POSES)
     p.add_argument(
         "--speed",
         type=float,

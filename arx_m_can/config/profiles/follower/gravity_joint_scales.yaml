@@ -11,7 +11,7 @@ joint_scales:
   - 1.0000  # joint2 / link2
   - 1.0000  # joint3 / link3
   - 1.0000  # joint4 / link4
-  - 1.0000  # joint5 / link5
+  - 1.0200  # joint5 / link5
   - 1.0000  # joint6 / link6 (+ tool0; grasp_base/fingers excluded at end_link)
 
 notes: >

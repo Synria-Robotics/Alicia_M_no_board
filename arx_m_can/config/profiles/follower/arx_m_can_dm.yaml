@@ -34,7 +34,7 @@ joints:
     model: "4340P"
     MIT:
       kp: 135.0
-      kd: 1.5
+      kd: 0.8
     POS_VEL:
       vel_kp: 0.0125
       vel_ki: 0.004
@@ -47,8 +47,8 @@ joints:
     feedback_id: 0x12
     model: "4340P"
     MIT:
-      kp: 150.0
-      kd: 4.0
+      kp: 225.0
+      kd: 2.0
     POS_VEL:
       vel_kp: 0.0125
       vel_ki: 0.004
@@ -61,8 +61,8 @@ joints:
     feedback_id: 0x13
     model: "4340P"
     MIT:
-      kp: 187.5
-      kd: 5.0
+      kp: 281.2
+      kd: 3.8
     POS_VEL:
       vel_kp: 0.0125
       vel_ki: 0.004
@@ -75,8 +75,8 @@ joints:
     feedback_id: 0x14
     model: "4310"
     MIT:
-      kp: 51.0
-      kd: 1.0
+      kp: 76.5
+      kd: 0.5
     POS_VEL:
       vel_kp: 0.0050
       vel_ki: 0.002
@@ -89,8 +89,8 @@ joints:
     feedback_id: 0x15
     model: "4310"
     MIT:
-      kp: 33.0
-      kd: 0.8
+      kp: 74.2
+      kd: 0.6
     POS_VEL:
       vel_kp: 0.0008
       vel_ki: 0.002
@@ -103,8 +103,8 @@ joints:
     feedback_id: 0x16
     model: "4310"
     MIT:
-      kp: 54.0
-      kd: 2.0
+      kp: 81.0
+      kd: 1.0
     POS_VEL:
       vel_kp: 0.0008
       vel_ki: 0.002

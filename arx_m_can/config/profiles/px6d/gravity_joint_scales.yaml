@@ -10,7 +10,7 @@ joint_scales:
   - 1.0000  # joint1 / link1
   - 1.1000  # joint2 / link2
   - 1.2000  # joint3 / link3
-  - 1.2000  # joint4 / link4
+  - 1.3000  # joint4 / link4
   - 1.0000  # joint5 / link5
   - 1.0000  # joint6 / link6 (+ merged link7/8/tool0)
 

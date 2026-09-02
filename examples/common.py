@@ -18,7 +18,8 @@ from api.profiles import DEFAULT_PROFILE, PROFILE_NAMES, get_profile, load_gravi
 
 DEFAULT_PORT = "/dev/ttyACM0"
 DEFAULT_BAUD = 1_000_000
-DEFAULT_POSES = Path("/home/ubuntu/Synria/geom_arx/src/calibration/config/poses_slave.yaml")
+DEFAULT_POSES = Path("/home/ubuntu/Synria/geom_arx/src/calibration/config/poses_master.yaml")
+# DEFAULT_POSES = Path("/home/ubuntu/Synria/geom_arx/src/calibration/config/poses_slave.yaml")
 NUM_ARM_JOINTS = 6
 
 
