@@ -1,15 +1,15 @@
-# ARX-M-CAN
+# Alicia M CAN
 
-Rust robot SDK for ARX arms (Damiao motors over USB2CAN), with a Python API
+Rust robot SDK for Alicia M arms (Damiao motors over USB2CAN), with a Python API
 styled like [Alicia-D-SDK](https://github.com/Synria-Robotics/Alicia-D-SDK).
 
 ## Layout
 
 ```text
-arx_m_can/
-├── arx_m_can/          # Rust library + config/profiles/{px6d,arx,follower}
-├── arx_m_can_py/       # PyO3 extension (_native)
-├── api/                # profiles, kinematics, SynriaRobotAPI
+alicia_m_rs/
+├── alicia_m_can/          # Rust library + config/profiles/{px6d,arx,arx_cam,follower}
+├── alicia_m_can_py/       # PyO3 extension (_native)
+├── api/                   # profiles, kinematics, SynriaRobotAPI
 ├── examples/
 └── pyproject.toml
 ```
@@ -18,20 +18,20 @@ arx_m_can/
 
 ```bash
 source "$HOME/.cargo/env"
-cd /home/ubuntu/Synria/arx/Rust/arx_m_can
-cargo build -p arx_m_can
-cargo test -p arx_m_can
+cd /home/ubuntu/Synria/arx/Rust/alicia_m_rs
+cargo build -p alicia_m_can
+cargo test -p alicia_m_can
 ```
 
 ## Install Python API
 
 Requires `python3-dev` (Ubuntu: `sudo apt install python3-dev`).
 
-Activate your Python environment first (e.g. `conda activate arx`), then:
+Activate your Python environment first (e.g. `conda activate geo`), then:
 
 ```bash
 pip install maturin
-cd /home/ubuntu/Synria/arx/Rust/arx_m_can
+cd /home/ubuntu/Synria/arx/Rust/alicia_m_rs
 maturin develop
 ```
 
@@ -59,12 +59,12 @@ Higher-level helpers are also exported from `api.synria_robot_api`:
 
 - `Arm` — low-level connect / read_state / scan_ids / set_zero
 - `scan_ids()` — standalone motor ID scan without enabling the arm
-- `Teleoperation` — Alicia-D leader → ARX-M-CAN follower (Rust loop)
+- `Teleoperation` — Alicia-D leader → Alicia M CAN follower (Rust loop)
 - `SparkVisBridge` — SparkVis WebSocket drag-to-robot bridge
 
 ## Examples
 
-All examples accept `--port`, `--baud`, and `--robot {px6d,arx,follower}`
+All examples accept `--port`, `--baud`, and `--robot {px6d,arx,arx_cam,follower}`
 (default `/dev/ttyACM0`, `1000000`, `px6d`).
 Ordered basic → advanced:
 
@@ -99,5 +99,5 @@ python examples/14_teleop_alicia_d_leader.py --leader-port /dev/ttyACM0 --follow
 python examples/15_sparkvis_control.py --dry-run
 ```
 
-Hardware config lives under `arx_m_can/config/profiles/<robot>/arx_m_can_dm.yaml`
+Hardware config lives under `alicia_m_can/config/profiles/<robot>/alicia_m_can_dm.yaml`
 (default robot: `px6d`).

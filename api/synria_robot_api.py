@@ -11,8 +11,8 @@ try:
     import _native
 except ImportError as exc:
     raise ImportError(
-        "arx_m_can native extension not found. "
-        "Build and install with: maturin develop (from the arx_m_can crate root)"
+        "alicia_m_can native extension not found. "
+        "Build and install with: maturin develop (from the alicia_m_rs repo root)"
     ) from exc
 
 from . import kinematics as _kinematics
@@ -41,6 +41,33 @@ def _to_rad(values: Sequence[float], joint_format: str) -> list[float]:
 
 
 _UNEXPECTED_KWARG = re.compile(r"unexpected keyword argument ['\"](\w+)['\"]")
+_GRIPPER_CLOSED_MOTOR_RAD = 0.0
+_GRIPPER_OPEN_MOTOR_RAD = 3.0
+
+
+def _as_user_gripper(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(parsed):
+        return None
+    return max(0.0, min(1000.0, parsed))
+
+
+def _motor_rad_to_user_gripper(position: Any) -> float | None:
+    try:
+        motor = float(position)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(motor):
+        return None
+    span = _GRIPPER_OPEN_MOTOR_RAD - _GRIPPER_CLOSED_MOTOR_RAD
+    if abs(span) < 1e-12:
+        return 0.0
+    return _as_user_gripper((motor - _GRIPPER_CLOSED_MOTOR_RAD) / span * 1000.0)
 
 
 def _construct_native(cls: Any, kwargs: dict[str, Any]) -> Any:
@@ -136,8 +163,25 @@ class SynriaRobotAPI:
         if info_type == "joint":
             return joints
         if info_type == "joint_gripper":
-            return {"angles": joints, "gripper": None}
+            return {"angles": joints, "gripper": self.get_gripper_value()}
         raise NotImplementedError(f"info_type={info_type!r} not supported")
+
+    def get_gripper_value(self, request_feedback: bool = True) -> float | None:
+        """Measured gripper in user units (0=closed, 1000=open)."""
+        native = getattr(self._robot, "get_gripper_value", None)
+        if callable(native):
+            try:
+                value = native(request_feedback)
+            except TypeError:
+                value = native()
+            parsed = _as_user_gripper(value)
+            if parsed is not None:
+                return parsed
+        state = self._robot.get_arm_state(request_feedback)
+        gripper = state.get("gripper") if isinstance(state, dict) else None
+        if not isinstance(gripper, dict) or gripper.get("position") is None:
+            return None
+        return _motor_rad_to_user_gripper(gripper["position"])
 
     def get_ik_seed_joints(self) -> list[float]:
         """MIT commanded joints (reference, not lagging encoder feedback)."""
@@ -161,7 +205,7 @@ class SynriaRobotAPI:
         gripper_timeout_sec: float | None = None,
         **_: Any,
     ) -> bool:
-        """Command joints. ``stream=False`` + wait is Ruckig P2P; ``stream=True`` is the 500 Hz walker."""
+        """Command joints. ``stream=False`` + wait is Ruckig Phase P2P; ``stream=True`` is the 500 Hz walker."""
         joints = None if target_joints is None else _to_rad(target_joints, joint_format)
         return bool(
             _invoke_native(

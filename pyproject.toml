@@ -3,9 +3,9 @@ requires = ["maturin>=1.4,<2.0"]
 build-backend = "maturin"
 
 [project]
-name = "arx-m-can"
+name = "alicia-m-can"
 version = "0.1.0"
-description = "ARX-M-CAN robot SDK — Rust core with Python API"
+description = "Alicia M CAN robot SDK — Rust core with Python API"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
@@ -19,7 +19,7 @@ dev = ["pytest>=7.0"]
 analytic = ["ssik"]
 
 [tool.maturin]
-manifest-path = "arx_m_can_py/Cargo.toml"
+manifest-path = "alicia_m_can_py/Cargo.toml"
 module-name = "_native"
 
 [tool.pytest.ini_options]

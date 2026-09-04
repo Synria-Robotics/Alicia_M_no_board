@@ -12,13 +12,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "anstyle"
-version = "1.0.14"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "940b3a0ca603d1eade50a4846a2afffd5ef57a9feac2c0e2ec2e14f9ead76000"
-
-[[package]]
-name = "arx_m_can"
+name = "alicia_m_can"
 version = "0.1.0"
 dependencies = [
  "motor_core",
@@ -33,12 +27,18 @@ dependencies = [
 ]
 
 [[package]]
-name = "arx_m_can_py"
+name = "alicia_m_can_py"
 version = "0.1.0"
 dependencies = [
- "arx_m_can",
+ "alicia_m_can",
  "pyo3",
 ]
+
+[[package]]
+name = "anstyle"
+version = "1.0.14"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "940b3a0ca603d1eade50a4846a2afffd5ef57a9feac2c0e2ec2e14f9ead76000"
 
 [[package]]
 name = "autocfg"

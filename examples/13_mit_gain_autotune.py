@@ -4,10 +4,10 @@
 Run in ``arx`` conda env with the arm manually placed at a representative hold pose::
 
     conda activate arx
-    cd /home/ubuntu/Synria/arx/Rust/arx_m_can
+    cd /home/ubuntu/Synria/arx/Rust/alicia_m_rs
     maturin develop --release
 
-    # Tune all joints (proximal → distal, j1 → j6), writes arx_m_can_dm.yaml
+    # Tune all joints (proximal → distal, j1 → j6), writes alicia_m_can_dm.yaml
     python examples/13_mit_gain_autotune.py tune --write-yaml
     python examples/13_mit_gain_autotune.py --port /dev/ttyACM1 tune --write-yaml
 
@@ -594,7 +594,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--pose-settle-sec", type=float, default=1.0, help="Wait after connect before tuning")
     p.add_argument("--sample-hz", type=float, default=100.0)
     p.add_argument("--vel-weight", type=float, default=0.15, help="Cost = rmse_pos + w * rmse_vel")
-    p.add_argument("--write-yaml", action="store_true", help="Write results to arx_m_can_dm.yaml")
+    p.add_argument("--write-yaml", action="store_true", help="Write results to alicia_m_can_dm.yaml")
     p.add_argument(
         "--goto-ref-pose",
         action="store_true",

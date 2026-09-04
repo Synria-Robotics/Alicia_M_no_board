@@ -9,11 +9,11 @@ from typing import Literal
 
 import yaml
 
-ProfileName = Literal["px6d", "arx", "follower"]
+ProfileName = Literal["px6d", "arx", "arx_cam", "follower"]
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
-_CONFIG_ROOT = _REPO_ROOT / "arx_m_can" / "config"
-_MODELS_ROOT = _REPO_ROOT / "arx_m_can" / "models"
+_CONFIG_ROOT = _REPO_ROOT / "alicia_m_can" / "config"
+_MODELS_ROOT = _REPO_ROOT / "alicia_m_can" / "models"
 _URDF_ROOT = Path(
     "/home/ubuntu/Alicia/Synria-Robot-Descriptions/synriard/urdf/Alicia_M_v1_2"
 )
@@ -40,8 +40,8 @@ def _profile(name: ProfileName, urdf_file: str, dynamics_file: str) -> RobotProf
         urdf=_URDF_ROOT / urdf_file,
         dynamics_json=_MODELS_ROOT / dynamics_file,
         scales_yaml=profile_dir / "gravity_joint_scales.yaml",
-        dm_yaml=profile_dir / "arx_m_can_dm.yaml",
-        dm_float_yaml=profile_dir / "arx_m_can_dm_float.yaml",
+        dm_yaml=profile_dir / "alicia_m_can_dm.yaml",
+        dm_float_yaml=profile_dir / "alicia_m_can_dm_float.yaml",
     )
 
 
@@ -55,6 +55,11 @@ PROFILES: dict[ProfileName, RobotProfile] = {
         "arx",
         "Alicia_M_v1_2_follower_ARX.urdf",
         "alicia_m_arx_dynamics.json",
+    ),
+    "arx_cam": _profile(
+        "arx_cam",
+        "Alicia_M_v1_2_follower_ARX_cam.urdf",
+        "alicia_m_arx_cam_dynamics.json",
     ),
     "follower": _profile(
         "follower",

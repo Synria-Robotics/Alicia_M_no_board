@@ -18,8 +18,8 @@ from api.profiles import DEFAULT_PROFILE, PROFILE_NAMES, get_profile, load_gravi
 
 DEFAULT_PORT = "/dev/ttyACM0"
 DEFAULT_BAUD = 1_000_000
-DEFAULT_POSES = Path("/home/ubuntu/Synria/geom_arx/src/calibration/config/poses_master.yaml")
-# DEFAULT_POSES = Path("/home/ubuntu/Synria/geom_arx/src/calibration/config/poses_slave.yaml")
+# DEFAULT_POSES = Path("/home/ubuntu/Synria/geom_arx/src/calibration/config/poses_master.yaml")
+DEFAULT_POSES = Path("/home/ubuntu/Synria/geom_arx/src/calibration/config/poses_slave.yaml")
 NUM_ARM_JOINTS = 6
 
 
@@ -48,13 +48,13 @@ def add_robot_arguments(parser: ArgumentParser, *, prefer_float: bool = False) -
         "--float",
         dest="use_float_config",
         action="store_true",
-        help="Use arx_m_can_dm_float.yaml (kp=0)",
+        help="Use alicia_m_can_dm_float.yaml (kp=0)",
     )
     parser.add_argument(
         "--no-float",
         dest="use_float_config",
         action="store_false",
-        help="Use production arx_m_can_dm.yaml",
+        help="Use production alicia_m_can_dm.yaml",
     )
     parser.set_defaults(use_float_config=prefer_float)
     parser.add_argument("--config-path", type=Path, default=None)

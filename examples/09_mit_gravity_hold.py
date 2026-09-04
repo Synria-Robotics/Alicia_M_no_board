@@ -6,7 +6,7 @@ Uses Kp/Kd from hardware YAML (``--float`` → kp=0 float config).
 Run from the ``arx`` conda env after building the Python extension::
 
     conda activate arx
-    cd /home/ubuntu/Synria/arx/Rust/arx_m_can
+    cd /home/ubuntu/Synria/arx/Rust/alicia_m_rs
     maturin develop --release
 
     # Default (--robot px6d)

@@ -4,7 +4,7 @@
 Workflow (run in ``arx`` conda env)::
 
     conda activate arx
-    cd /home/ubuntu/Synria/arx/Rust/arx_m_can
+    cd /home/ubuntu/Synria/arx/Rust/alicia_m_rs
     maturin develop --release
 
     # Follower arm — export model, then gravity-only float test
@@ -109,7 +109,7 @@ def write_scales_yaml(path: Path, scales: list[float], urdf: Path) -> None:
             "",
             "notes: >",
             "  Re-export JSON after URDF edits; maturin develop --release.",
-            "  Float test: arx_m_can_dm_float.yaml (kp=0, kd=1).",
+            "  Float test: alicia_m_can_dm_float.yaml (kp=0, kd=1).",
             "",
         ]
     )
@@ -147,7 +147,7 @@ Phase 7 — Full-chain validation
 
 Phase 8 — Production
   • write-scales with final values.
-  • Restore production arx_m_can_dm.yaml MIT kp/kd.
+  • Restore production alicia_m_can_dm.yaml MIT kp/kd.
   • Re-test with production gains + gravity FF on.
 
 Tips

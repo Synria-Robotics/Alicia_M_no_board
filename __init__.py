@@ -1,4 +1,4 @@
-"""ARX-M-CAN Python SDK."""
+"""Alicia M CAN Python SDK."""
 
 from __future__ import annotations
 

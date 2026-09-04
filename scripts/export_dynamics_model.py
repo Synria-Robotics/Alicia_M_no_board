@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Export RoboCore chain dynamics arrays to JSON for arx_m_can.
+"""Export RoboCore chain dynamics arrays to JSON for alicia_m_can.
 
     python scripts/export_dynamics_model.py --robot arx
     python scripts/export_dynamics_model.py --robot px6d

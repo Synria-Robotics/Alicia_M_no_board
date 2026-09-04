@@ -1,0 +1,19 @@
+# Per-joint gravity feedforward scales (MIT tau_ff = scale[i] * g(q)[i]).
+# Tune distal-first: joint6 → joint1.
+# Profile: arx_cam (Alicia M ARX + camera on link6)
+
+urdf: /home/ubuntu/Alicia/Synria-Robot-Descriptions/synriard/urdf/Alicia_M_v1_2/Alicia_M_v1_2_follower_ARX_cam.urdf
+base_link: base_link
+end_link: tool0
+
+joint_scales:
+  - 1.0000  # joint1 / link1
+  - 1.0000  # joint2 / link2
+  - 1.0000  # joint3 / link3
+  - 1.1000  # joint4 / link4
+  - 1.0000  # joint5 / link5
+  - 1.0000  # joint6 / link6 (+ merged link7/8/tool0, +99.8g camera)
+
+notes: >
+  Re-export JSON after URDF edits: python scripts/export_dynamics_model.py --robot arx_cam
+  Float test: alicia_m_can_dm_float.yaml (kp=0, kd=0.15).

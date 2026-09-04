@@ -4,7 +4,7 @@
 Uses Ruckig jerk-limited trajectories in the 500 Hz refresh loop with gravity FF.
 
     conda activate arx
-    cd /home/ubuntu/Synria/arx/Rust/arx_m_can
+    cd /home/ubuntu/Synria/arx/Rust/alicia_m_rs
     maturin develop --release
     python examples/10_verify_poses.py
     python examples/10_verify_poses.py --port /dev/ttyACM1 --speed 60 --motion-tolerance 0.02
@@ -74,7 +74,7 @@ def main() -> int:
     )
 
     print(f"{len(poses)} poses from {args.poses.name}  robot={args.robot}")
-    print("Mode: MIT + Ruckig trajectory + gravity FF")
+    print("Mode: MIT + Ruckig Phase P2P + isotropic governor + gravity FF")
     kp, kd = robot.get_arm_mit_gains()
     print(f"Kp={[round(x, 1) for x in kp[:6]]}  Kd={[round(x, 1) for x in kd[:6]]}")
     loop_before = robot.get_control_loop_stats()
