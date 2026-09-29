@@ -492,6 +492,17 @@ impl ArxMCanRobot {
         compute_gravity_ff(&guard, self.gravity.as_ref(), joints)
     }
 
+    /// Walk MIT `q_des` to `positions`. `speed` limits the first catch-up only.
+    pub fn shape_arm_joints(&mut self, positions: &[f64], speed: f64) -> Result<()> {
+        let target: Vec<f64> = positions.iter().take(NUM_ARM_JOINTS).copied().collect();
+        if let Some(ref refresh) = self.refresh {
+            refresh.set_sync_shape(target.clone(), self.vlim_from_speed(speed));
+            self.commanded_joints = target;
+            return Ok(());
+        }
+        self.send_joints_direct(&target, 0.0)
+    }
+
     /// Latch latest `q*` for the 500 Hz FOH walker (coast at sample velocity).
     fn stream_arm_joints(&mut self, target: &[f64], vlim: f64) -> Result<()> {
         if let Some(ref refresh) = self.refresh {

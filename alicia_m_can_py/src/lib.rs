@@ -1,9 +1,11 @@
+use std::sync::{Arc, Mutex};
+
 use alicia_m_can::{
-    default_config, scan_ids as rust_scan_ids, ArxMCanArm, ArxMCanRobot, ArxMCanState, ArxError,
-    GravityCompConfig, LeaderSample, ScanOptions, SparkVisBridge, SparkVisConfig, TeleopConfig,
-    TeleopSession, DEFAULT_ARM_CONTROL_MODE, DEFAULT_BAUD, DEFAULT_CONTROL_HZ,
-    DEFAULT_MAX_JOINT_ACCEL_RAD_S2, DEFAULT_MAX_JOINT_JERK_RAD_S3, DEFAULT_MIT_CONTROL_HZ,
-    DEFAULT_PORT, DEFAULT_WAIT_TOLERANCE_RAD,
+    alicia_d_rad_to_alicia_m_rad, default_config, scan_ids as rust_scan_ids, ArxMCanArm,
+    ArxMCanRobot, ArxMCanState, ArxError, GravityCompConfig, LeaderSample, ScanOptions,
+    SparkVisBridge, SparkVisConfig, TeleopConfig, TeleopSession, DEFAULT_ARM_CONTROL_MODE,
+    DEFAULT_BAUD, DEFAULT_CONTROL_HZ, DEFAULT_MAX_JOINT_ACCEL_RAD_S2, DEFAULT_MAX_JOINT_JERK_RAD_S3,
+    DEFAULT_MIT_CONTROL_HZ, DEFAULT_PORT, DEFAULT_WAIT_TOLERANCE_RAD,
 };
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
@@ -46,6 +48,10 @@ fn leader_field<'py, T: FromPyObject<'py>>(state: &Bound<'py, PyAny>, name: &str
     state.getattr(name)?.extract()
 }
 
+/// One fresh Alicia-D frame per tick, same as SDK ``Teleoperation._control_loop``.
+///
+/// The call blocks only until that reply arrives. The 500 Hz MIT loop keeps
+/// holding the previous pose while this thread waits, so the wait does not brake.
 fn parse_leader_sample(_py: Python<'_>, leader: &Bound<'_, PyAny>) -> PyResult<Option<LeaderSample>> {
     let state = leader.call_method1("get_robot_state", ("joint_gripper",))?;
     if state.is_none() {
@@ -60,15 +66,12 @@ fn parse_leader_sample(_py: Python<'_>, leader: &Bound<'_, PyAny>) -> PyResult<O
     for (i, v) in angles.iter().take(6).enumerate() {
         joints[i] = *v;
     }
-    Ok(Some(LeaderSample {
-        joints,
-        gripper,
-    }))
+    Ok(Some(LeaderSample { joints, gripper }))
 }
 
 #[pyclass(name = "Robot")]
 struct PyRobot {
-    inner: Option<ArxMCanRobot>,
+    inner: Option<Arc<Mutex<ArxMCanRobot>>>,
 }
 
 #[pymethods]
@@ -137,7 +140,7 @@ impl PyRobot {
         )
         .map_err(map_err)?;
         Ok(Self {
-            inner: Some(robot),
+            inner: Some(Arc::new(Mutex::new(robot))),
         })
     }
 
@@ -146,7 +149,11 @@ impl PyRobot {
     }
 
     fn enabled(&self) -> bool {
-        self.inner.as_ref().map(|r| r.enabled()).unwrap_or(false)
+        self.inner
+            .as_ref()
+            .and_then(|robot| robot.lock().ok())
+            .map(|robot| robot.enabled())
+            .unwrap_or(false)
     }
 
     fn enable(&mut self) -> PyResult<()> {
@@ -275,30 +282,52 @@ impl PyRobot {
     }
 
     fn disconnect(&mut self) -> PyResult<()> {
-        if let Some(mut robot) = self.inner.take() {
-            robot.disconnect().map_err(map_err)?;
+        if let Some(robot) = self.inner.as_ref() {
+            robot
+                .lock()
+                .map_err(|_| PyRuntimeError::new_err("robot mutex poisoned"))?
+                .disconnect()
+                .map_err(map_err)?;
         }
         Ok(())
     }
 }
 
 impl PyRobot {
-    fn inner_ref(&self) -> PyResult<&ArxMCanRobot> {
+    fn inner_ref(&self) -> PyResult<std::sync::MutexGuard<'_, ArxMCanRobot>> {
         self.inner
             .as_ref()
-            .ok_or_else(|| PyRuntimeError::new_err("robot already disconnected"))
+            .ok_or_else(|| PyRuntimeError::new_err("robot already disconnected"))?
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("robot mutex poisoned"))
     }
 
-    fn inner_mut(&mut self) -> PyResult<&mut ArxMCanRobot> {
+    fn inner_mut(&mut self) -> PyResult<std::sync::MutexGuard<'_, ArxMCanRobot>> {
+        self.inner_ref()
+    }
+
+    fn shared(&self) -> PyResult<Arc<Mutex<ArxMCanRobot>>> {
         self.inner
-            .as_mut()
+            .clone()
             .ok_or_else(|| PyRuntimeError::new_err("robot already disconnected"))
     }
 
     fn take_inner(&mut self) -> PyResult<ArxMCanRobot> {
-        self.inner
+        let arc = self
+            .inner
             .take()
-            .ok_or_else(|| PyRuntimeError::new_err("robot already disconnected"))
+            .ok_or_else(|| PyRuntimeError::new_err("robot already disconnected"))?;
+        match Arc::try_unwrap(arc) {
+            Ok(mutex) => mutex
+                .into_inner()
+                .map_err(|_| PyRuntimeError::new_err("robot mutex poisoned")),
+            Err(arc) => {
+                self.inner = Some(arc);
+                Err(PyRuntimeError::new_err(
+                    "robot is in use by teleoperation",
+                ))
+            }
+        }
     }
 }
 
@@ -417,10 +446,10 @@ struct PyTeleoperation {
 #[pymethods]
 impl PyTeleoperation {
     #[new]
-    #[pyo3(signature = (follower, frequency_hz=60.0, follower_speed=400.0, gripper_speed=400.0, gripper_scale=1.0, use_joint_mapping=true, max_joint_accel_rad_s2=None, max_joint_jerk_rad_s3=None))]
+    #[pyo3(signature = (follower, frequency_hz=200.0, follower_speed=400.0, gripper_speed=400.0, gripper_scale=1.0, use_joint_mapping=true, max_joint_accel_rad_s2=None, max_joint_jerk_rad_s3=None))]
     #[allow(clippy::too_many_arguments)]
     fn new(
-        follower: &mut PyRobot,
+        follower: &PyRobot,
         frequency_hz: f64,
         follower_speed: f64,
         gripper_speed: f64,
@@ -429,10 +458,9 @@ impl PyTeleoperation {
         max_joint_accel_rad_s2: Option<f64>,
         max_joint_jerk_rad_s3: Option<f64>,
     ) -> PyResult<Self> {
-        let robot = follower.take_inner()?;
         Ok(Self {
-            session: Some(TeleopSession::new(
-                robot,
+            session: Some(TeleopSession::from_shared(
+                follower.shared()?,
                 TeleopConfig {
                     frequency_hz,
                     follower_speed,
@@ -446,18 +474,26 @@ impl PyTeleoperation {
         })
     }
 
-    fn start(&mut self, leader: PyObject) -> PyResult<()> {
+    #[pyo3(signature = (leader, on_state=None))]
+    fn start(&mut self, leader: PyObject, on_state: Option<PyObject>) -> PyResult<()> {
         let session = self
             .session
             .as_mut()
             .ok_or_else(|| PyRuntimeError::new_err("teleop session already stopped"))?;
         let leader = Python::with_gil(|py| leader.clone_ref(py));
+        let on_state = on_state.map(|callback| Python::with_gil(|py| callback.clone_ref(py)));
         session
             .start(move || {
-                Python::with_gil(|py| {
+                Python::with_gil(|py| -> Result<Option<LeaderSample>, ArxError> {
                     let bound = leader.bind(py);
-                    parse_leader_sample(py, bound)
-                        .map_err(|e| ArxError::Runtime(e.to_string()))
+                    let sample = parse_leader_sample(py, bound)
+                        .map_err(|e| ArxError::Runtime(e.to_string()))?;
+                    if let (Some(callback), Some(frame)) = (on_state.as_ref(), sample.as_ref()) {
+                        if let Ok(joints) = PyList::new(py, frame.joints) {
+                            let _ = callback.call1(py, (joints, frame.gripper));
+                        }
+                    }
+                    Ok(sample)
                 })
             })
             .map_err(map_err)
@@ -567,6 +603,18 @@ impl Drop for PySparkVisBridge {
     }
 }
 
+#[pyfunction]
+fn map_alicia_d_joints(joints: Vec<f64>) -> PyResult<Vec<f64>> {
+    if joints.len() < 6 {
+        return Err(PyValueError::new_err("expected 6 Alicia-D joint angles"));
+    }
+    let mut q = [0.0; 6];
+    for (i, value) in joints.iter().take(6).enumerate() {
+        q[i] = *value;
+    }
+    Ok(alicia_d_rad_to_alicia_m_rad(&q).to_vec())
+}
+
 #[pymodule]
 fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyRobot>()?;
@@ -574,6 +622,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyTeleoperation>()?;
     m.add_class::<PySparkVisBridge>()?;
     m.add_function(wrap_pyfunction!(scan_ids, m)?)?;
+    m.add_function(wrap_pyfunction!(map_alicia_d_joints, m)?)?;
     m.add("DEFAULT_PORT", DEFAULT_PORT)?;
     m.add("DEFAULT_BAUD", DEFAULT_BAUD)?;
     m.add("DEFAULT_CONTROL_HZ", DEFAULT_CONTROL_HZ)?;

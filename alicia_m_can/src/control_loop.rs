@@ -11,6 +11,10 @@ use std::time::Duration;
 use crate::dynamics::GravityCompensator;
 use crate::hardware::ArxMCanArm;
 use crate::trajectory::governor::ReferenceGovernor;
+use crate::trajectory::sync_shape::{
+    begin_approach_segment, begin_sync_segment, firmware_sync_gains, step_sync_segment, SyncSegment,
+    SYNC_SHAPE_DEFAULT_S,
+};
 use crate::trajectory::walker::{note_stream_goal, step_joint_des};
 use crate::trajectory::{JointTrajectoryPlanner, TrajectoryLimits};
 use crate::types::VlimInput;
@@ -21,6 +25,11 @@ enum MotionCommand {
         vlim: f64,
     },
     StreamGoal {
+        q: Vec<f64>,
+        vlim: f64,
+    },
+    /// Linear 500 Hz bridge to `q`. `vlim` limits only the first catch-up.
+    SyncShape {
         q: Vec<f64>,
         vlim: f64,
     },
@@ -102,8 +111,13 @@ impl CommandRefreshLoop {
                 let mut last_dq = vec![0.0; q_des.len()];
                 let mut v_stream = vec![0.0; q_des.len()];
                 let mut last_goal_at: Option<std::time::Instant> = None;
+                let mut last_sync_at: Option<std::time::Instant> = None;
                 let mut goal_age = 0.0;
                 let mut walking = false;
+                let mut sync: Option<SyncSegment> = None;
+                let mut sync_session = false;
+                let mut catching_up = false;
+                let mut profile_gains: Option<(Vec<f64>, Vec<f64>)> = None;
 
                 while !*loop_stop.lock().unwrap() {
                     let t0 = std::time::Instant::now();
@@ -113,6 +127,8 @@ impl CommandRefreshLoop {
                             MotionCommand::Freeze { q, vlim } => {
                                 planner = None;
                                 walking = false;
+                                sync = None;
+                                sync_session = false;
                                 q_des = q.clone();
                                 q_goal = q;
                                 last_dq = vec![0.0; q_des.len()];
@@ -122,9 +138,34 @@ impl CommandRefreshLoop {
                                 hold_vlim = vlim;
                                 walk_vlim = vlim;
                             }
+                            MotionCommand::SyncShape { q, vlim } => {
+                                planner = None;
+                                walking = false;
+                                if !sync_session {
+                                    catching_up = true;
+                                }
+                                sync_session = true;
+                                let now = std::time::Instant::now();
+                                let frame_dt = last_sync_at
+                                    .map(|t| now.duration_since(t).as_secs_f64())
+                                    .unwrap_or(SYNC_SHAPE_DEFAULT_S);
+                                last_sync_at = Some(now);
+                                let q = pad_to_len(q, q_des.len());
+                                sync = Some(if catching_up {
+                                    begin_approach_segment(&q_des, &q, vlim, dt)
+                                } else {
+                                    begin_sync_segment(&q_des, &q, frame_dt, dt)
+                                });
+                                q_goal = q;
+                                last_dq = vec![0.0; q_des.len()];
+                                v_stream = vec![0.0; q_des.len()];
+                                goal_age = 0.0;
+                            }
                             MotionCommand::StreamGoal { q, vlim } => {
                                 planner = None;
                                 walking = true;
+                                sync = None;
+                                sync_session = false;
                                 walk_vlim = vlim;
                                 let now = std::time::Instant::now();
                                 let dt_goal = last_goal_at
@@ -144,6 +185,8 @@ impl CommandRefreshLoop {
                             } => {
                                 traj_vlim = vlim;
                                 walking = false;
+                                sync = None;
+                                sync_session = false;
                                 v_stream.fill(0.0);
                                 last_goal_at = None;
                                 goal_age = 0.0;
@@ -178,6 +221,17 @@ impl CommandRefreshLoop {
                                     }
                                     Err(_) => (q_des.clone(), last_dq.clone(), traj_vlim),
                                 }
+                            } else if sync_session {
+                                let arrived = if let Some(seg) = sync.as_ref() {
+                                    step_sync_segment(&mut q_des, seg)
+                                } else {
+                                    false
+                                };
+                                if arrived {
+                                    sync = None;
+                                    catching_up = false;
+                                }
+                                (q_des.clone(), vec![0.0; q_des.len()], hold_vlim)
                             } else if walking {
                                 let dq = step_joint_des(
                                     &mut q_des,
@@ -195,6 +249,31 @@ impl CommandRefreshLoop {
                             };
 
                             let mut arm = arm.lock().map_err(|_| ())?;
+                            // Firmware Alicia-D sync: tau = 0, KpMax/KdMax, no governor.
+                            // Gravity and the reference governor stay on every other motion.
+                            if sync_session && mit_mode {
+                                if profile_gains.is_none() {
+                                    let (kp, kd) = arm.get_arm_mit_gains().map_err(|_| ())?;
+                                    let (sync_kp, sync_kd) = firmware_sync_gains(kp.len());
+                                    arm.set_arm_mit_gains(Some(&sync_kp), Some(&sync_kd))
+                                        .map_err(|_| ())?;
+                                    profile_gains = Some((kp, kd));
+                                }
+                                let zeros = vec![0.0; q_ideal.len()];
+                                return arm
+                                    .send_arm_command(
+                                        &q_ideal,
+                                        Some(&zeros),
+                                        Some(VlimInput::Scalar(vlim)),
+                                        true,
+                                        Some(&zeros),
+                                    )
+                                    .map_err(|_| ());
+                            }
+                            if let Some((kp, kd)) = profile_gains.take() {
+                                arm.set_arm_mit_gains(Some(&kp), Some(&kd))
+                                    .map_err(|_| ())?;
+                            }
                             let (joints, velocities, tau_ff) = if mit_mode {
                                 if let Some(gov) = governor.as_mut() {
                                     let state = arm.read_state(false).map_err(|_| ())?;
@@ -259,6 +338,11 @@ impl CommandRefreshLoop {
     /// Latch teleop `q*` and coast `q_des` (FOH) at `vlim` on the refresh thread.
     pub fn set_stream_goal(&self, joints: Vec<f64>, vlim: f64) {
         self.enqueue(MotionCommand::StreamGoal { q: joints, vlim });
+    }
+
+    /// Walk `q_des` to `joints`. The first catch-up is limited to `vlim`.
+    pub fn set_sync_shape(&self, joints: Vec<f64>, vlim: f64) {
+        self.enqueue(MotionCommand::SyncShape { q: joints, vlim });
     }
 
     pub fn start_trajectory(

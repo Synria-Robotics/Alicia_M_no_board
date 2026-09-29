@@ -9,7 +9,7 @@ arm_control_mode: mit
 # Auto-tune: python examples/13_mit_gain_autotune.py tune --write-yaml
 # J6 at calibration ref: python examples/13_mit_gain_autotune.py tune --focus-joint 6 --goto-ref-pose --write-yaml
 
-channel: /dev/ttyACM0
+channel: /dev/ttyACM2
 baud: 1000000
 rate: 500
 

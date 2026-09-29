@@ -1,3 +1,11 @@
+//! Alicia-D → Alicia-M joint map used by teleoperation.
+//!
+//! Same relationship as Alicia-M-SDK ``Teleoperation`` when its ``joint_mapper``
+//! is ``convert_joints_rad_from_alicia_d_to_alicia_m``:
+//! D zero aligns to the M interval midpoint, joint 3 (index 2) is negated and
+//! scaled by travel, joints 4 and 6 (indexes 3 and 5) are reversed, and every
+//! output is clipped to the Alicia-M limits.
+
 use std::f64::consts::PI;
 
 const D_LIMITS: [(f64, f64); 6] = [
@@ -66,8 +74,28 @@ mod tests {
     use super::*;
 
     #[test]
-    fn maps_six_joints() {
+    fn zero_mapping_matches_sdk() {
+        // Alicia-M-SDK JointMappingTest.test_zero_mapping_and_reversed_joints
+        let mapped = alicia_d_deg_to_alicia_m_deg(&[0.0, 0.0, 0.0, 10.0, 0.0, 10.0]);
+        assert!((mapped[0] - 0.0).abs() < 1e-9);
+        assert!((mapped[1] - -89.95).abs() < 1e-9);
+        assert!((mapped[3] - -10.0).abs() < 1e-9);
+        assert!((mapped[5] - -10.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn proportional_joint_and_clamping_match_sdk() {
+        // Alicia-M-SDK JointMappingTest.test_proportional_joint_and_clamping
+        let mapped = alicia_d_deg_to_alicia_m_deg(&[999.0, 0.0, 999.0, 0.0, 0.0, 0.0]);
+        assert!((mapped[0] - 157.5).abs() < 1e-9);
+        assert!((mapped[2] - -179.9).abs() < 1e-9);
+    }
+
+    #[test]
+    fn rad_zero_maps_joint2_to_midpoint() {
+        // Alicia-M-SDK JointMappingTest.test_rad_mapping
         let mapped = alicia_d_rad_to_alicia_m_rad(&[0.0; 6]);
         assert_eq!(mapped.len(), 6);
+        assert!((mapped[1] - (-89.95_f64).to_radians()).abs() < 1e-9);
     }
 }

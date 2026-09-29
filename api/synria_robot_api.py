@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import math
 import re
+import threading
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -384,11 +386,76 @@ def scan_ids(
     )
 
 
-class Teleoperation:
-    """Alicia-D leader → ARX-M-CAN follower teleoperation (Rust loop)."""
+def map_alicia_d_joints(joints: Sequence[float]) -> list[float]:
+    """Map six Alicia-D joint angles (rad) onto the Alicia-M follower."""
+    return [float(v) for v in _native.map_alicia_d_joints(list(joints)[:6])]
 
-    def __init__(self, follower: SynriaRobotAPI, **kwargs: Any) -> None:
-        self._teleop = _native.Teleoperation(follower._robot, **kwargs)
+
+class Teleoperation:
+    """Alicia-D leader → follower. The 500 Hz segment runs in Rust.
+
+    The first move onto the leader pose follows ``follower_speed``. After that,
+    each leader frame is a 4–8 ms segment. ``on_state`` receives
+    ``(joints, gripper, loop_count, run_status_text, run_status_raw)``.
+    """
+
+    def __init__(
+        self,
+        follower: Any,
+        *,
+        frequency_hz: float = 200.0,
+        follower_speed: float = 80.0,
+        gripper_speed: float = 200.0,
+        gripper_scale: float = 1.0,
+        use_joint_mapping: bool = True,
+        on_state: Callable[..., None] | None = None,
+        **kwargs: Any,
+    ) -> None:
+        native = getattr(follower, "_robot", follower)
+        self._on_state = on_state
+        self._leader: Any = None
+        self._loop_count = 0
+        self._running = threading.Event()
+        self._teleop = _native.Teleoperation(
+            native,
+            frequency_hz=float(frequency_hz),
+            follower_speed=float(follower_speed),
+            gripper_speed=float(gripper_speed),
+            gripper_scale=float(gripper_scale),
+            use_joint_mapping=use_joint_mapping,
+            **kwargs,
+        )
+
+    def start(self, leader: Any | None = None) -> None:
+        arm = leader if leader is not None else self._leader
+        if arm is None:
+            raise RuntimeError("leader arm is required to start teleoperation")
+        self._leader = arm
+
+        def _on_sample(joints: Any, gripper: float) -> None:
+            parser = getattr(getattr(arm, "servo_driver", None), "data_parser", None)
+            text = getattr(parser, "_run_status_text", None) if parser is not None else None
+            raw = getattr(parser, "_run_status", None) if parser is not None else None
+            self._loop_count += 1
+            if self._on_state is not None:
+                self._on_state(
+                    joints,
+                    float(gripper),
+                    self._loop_count,
+                    text if isinstance(text, str) else "idle",
+                    raw,
+                )
+
+        self._teleop.start(arm, on_state=_on_sample)
+        self._running.set()
+
+    def stop(self) -> None:
+        self._running.clear()
+        self._teleop.stop()
+
+    def disconnect_follower(self) -> None:
+        self.stop()
+        self._teleop.disconnect_follower()
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._teleop, name)

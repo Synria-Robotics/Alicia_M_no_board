@@ -1,8 +1,14 @@
 #!/usr/bin/env python3
-"""Alicia-D leader → ARX-M-CAN follower teleoperation.
+"""Alicia-D leader → follower2 teleoperation.
 
-Uses the Rust ``Teleoperation`` loop with Alicia-D → Alicia-M joint mapping
-and MIT stream latching (500 Hz ``q_des`` walker, no per-tick Ruckig).
+Uses the Rust ``Teleoperation`` loop. Joint mapping matches Alicia-M-SDK
+``Teleoperation`` with ``convert_joints_rad_from_alicia_d_to_alicia_m``:
+D zero maps to the M interval midpoint, joint 3 is scaled by travel, joints
+4 and 6 are reversed, and outputs are clipped to the Alicia-M limits.
+The first move onto the leader pose follows ``--speed``. After the follower
+catches that pose, each leader frame is a 4–8 ms segment on the 500 Hz loop.
+The follower MIT frame uses the firmware kp/kd table with ``dq = 0`` and
+``tau = 0``.
 
 Examples:
   python examples/14_teleop_alicia_d_leader.py
@@ -18,8 +24,10 @@ import argparse
 from common import DEFAULT_BAUD, DEFAULT_PORT
 import alicia_d_sdk
 
-from api.profiles import DEFAULT_PROFILE, PROFILE_NAMES
+from api.profiles import PROFILE_NAMES
 from api.synria_robot_api import Teleoperation, create_robot
+
+FOLLOWER_ROBOT = "follower2"
 
 
 def main(args: argparse.Namespace) -> None:
@@ -46,7 +54,7 @@ def main(args: argparse.Namespace) -> None:
 
         print(
             f"Ready: leader={args.leader_port!r} follower={args.follower_port!r} "
-            f"freq={args.frequency:.0f}Hz speed={args.speed:.0f} "
+            f"robot={args.robot!r} freq={args.frequency:.0f}Hz speed={args.speed:.0f} "
             f"gripper_speed={args.gripper_speed:.0f}"
         )
         input("Press Enter to start teleoperation...")
@@ -64,16 +72,26 @@ def main(args: argparse.Namespace) -> None:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Alicia-D leader → ARX-M-CAN follower teleoperation",
+        description="Alicia-D leader → follower2 teleoperation",
     )
     parser.add_argument("--leader-port", default=DEFAULT_PORT, help="Alicia-D leader serial port")
     parser.add_argument(
         "--follower-port",
         default="/dev/ttyACM2",
-        help="ARX-M-CAN follower USB2CAN port",
+        help="follower2 USB2CAN port",
     )
-    parser.add_argument("--frequency", type=float, default=60.0, help="Teleop loop frequency (Hz)")
-    parser.add_argument("--speed", type=float, default=80.0, help="Follower joint speed [0,400]")
+    parser.add_argument(
+        "--frequency",
+        type=float,
+        default=200.0,
+        help="Leader poll cap (Hz). The Alicia-D read still waits on the serial reply",
+    )
+    parser.add_argument(
+        "--speed",
+        type=float,
+        default=200.0,
+        help="Speed of the initial move onto the leader pose [0,400]. Also used for --home",
+    )
     parser.add_argument(
         "--gripper-speed",
         type=float,
@@ -85,15 +103,15 @@ if __name__ == "__main__":
     parser.add_argument(
         "--robot",
         choices=PROFILE_NAMES,
-        default=DEFAULT_PROFILE,
-        help="ARX-M-CAN follower variant",
+        default=FOLLOWER_ROBOT,
+        help="Follower variant (default: follower2)",
     )
     parser.add_argument("--home", action="store_true", help="Move follower to zero before teleop")
     parser.add_argument("--home-speed", type=float, default=40.0, help="Home motion speed [0,400]")
     parser.add_argument(
         "--no-joint-mapping",
         action="store_true",
-        help="Disable Alicia-D → Alicia-M joint mapping",
+        help="Disable Alicia-D → Alicia-M joint mapping (SDK Teleoperation mapper)",
     )
     parser.add_argument(
         "--max-joint-accel",

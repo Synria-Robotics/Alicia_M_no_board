@@ -23,7 +23,7 @@ pub struct TeleopConfig {
 impl Default for TeleopConfig {
     fn default() -> Self {
         Self {
-            frequency_hz: 60.0,
+            frequency_hz: 200.0,
             follower_speed: 400.0,
             gripper_speed: 400.0,
             gripper_scale: 1.0,
@@ -48,8 +48,13 @@ pub struct TeleopSession {
 
 impl TeleopSession {
     pub fn new(follower: ArxMCanRobot, config: TeleopConfig) -> Self {
+        Self::from_shared(Arc::new(Mutex::new(follower)), config)
+    }
+
+    /// Share the follower with the caller so joint reads stay available during teleop.
+    pub fn from_shared(follower: Arc<Mutex<ArxMCanRobot>>, config: TeleopConfig) -> Self {
         Self {
-            follower: Arc::new(Mutex::new(follower)),
+            follower,
             config,
             stop: Arc::new(Mutex::new(false)),
             handle: None,
@@ -104,6 +109,12 @@ fn teleop_loop<F>(
     F: FnMut() -> Result<Option<LeaderSample>>,
 {
     let interval = Duration::from_secs_f64(1.0 / config.frequency_hz.max(1.0));
+    // Joint targets are shaped on the 500 Hz loop. Accel limits stay on Ruckig only.
+    let _ = (config.max_joint_accel_rad_s2, config.max_joint_jerk_rad_s3);
+    // Gripper CAN writes share the bus with the 500 Hz joint stream.
+    let gripper_period = Duration::from_millis(20);
+    let mut last_gripper_send = Instant::now() - gripper_period;
+    let mut last_gripper_cmd = f64::NAN;
     while !*stop.lock().unwrap() {
         let t0 = Instant::now();
         if let Ok(Some(sample)) = read_leader() {
@@ -113,20 +124,29 @@ fn teleop_loop<F>(
             }
             let gripper = map_gripper(sample.gripper, config.gripper_scale);
             if let Ok(mut robot) = follower.lock() {
-                let _ = robot.set_robot_state(
-                    Some(&joints),
-                    Some(validate_gripper_value(gripper)),
-                    config.follower_speed,
-                    config.gripper_speed,
-                    false,
-                    None,
-                    None,
-                    config.max_joint_accel_rad_s2,
-                    config.max_joint_jerk_rad_s3,
-                    true,
-                    None,
-                    None,
-                );
+                // First catch-up uses --speed. Later frames use the 4–8 ms window.
+                let _ = robot.shape_arm_joints(&joints, config.follower_speed);
+                let gripper_due = !last_gripper_cmd.is_finite()
+                    || ((gripper - last_gripper_cmd).abs() > 0.5
+                        && last_gripper_send.elapsed() >= gripper_period);
+                if gripper_due {
+                    let _ = robot.set_robot_state(
+                        None,
+                        Some(validate_gripper_value(gripper)),
+                        config.follower_speed,
+                        config.gripper_speed,
+                        false,
+                        None,
+                        None,
+                        None,
+                        None,
+                        false,
+                        None,
+                        None,
+                    );
+                    last_gripper_cmd = gripper;
+                    last_gripper_send = Instant::now();
+                }
             }
         }
         let elapsed = t0.elapsed();

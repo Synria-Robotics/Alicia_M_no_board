@@ -9,7 +9,7 @@ from typing import Literal
 
 import yaml
 
-ProfileName = Literal["px6d", "arx", "arx_cam", "follower"]
+ProfileName = Literal["px6d", "arx", "arx_cam", "follower", "follower2"]
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _CONFIG_ROOT = _REPO_ROOT / "alicia_m_can" / "config"
@@ -63,6 +63,12 @@ PROFILES: dict[ProfileName, RobotProfile] = {
     ),
     "follower": _profile(
         "follower",
+        "Alicia_M_v1_2_follower.urdf",
+        "alicia_m_follower_dynamics.json",
+    ),
+    # Same URDF/dynamics as follower; distinct MIT gains and gravity scales.
+    "follower2": _profile(
+        "follower2",
         "Alicia_M_v1_2_follower.urdf",
         "alicia_m_follower_dynamics.json",
     ),

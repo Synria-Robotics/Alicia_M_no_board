@@ -111,3 +111,55 @@ def try_solve(
         "ori_err": ori_err,
         "backend": "ssik",
     }
+
+
+def try_solve_best(
+    T_target: np.ndarray,
+    q_seed: np.ndarray | None,
+    *,
+    all_branches: bool = False,
+    pos_tol: float = 1e-3,
+    ori_tol: float = 2e-2,
+) -> dict[str, Any] | None:
+    """Analytic IK that only returns a pose meeting ``pos_tol`` / ``ori_tol``.
+
+    ``all_branches=True`` enumerates the full UR redundancy set (sorted
+    toward ``q_seed``) and picks the first accurate solution. Tracking
+    uses ``all_branches=False`` (nearest seed only). Never falls back
+    to DLS or an inaccurate ``best_q``.
+    """
+    if not ANALYTIC_AVAILABLE or _ik is None:
+        return None
+    T = np.asarray(T_target, dtype=np.float64).reshape(4, 4)
+    q0 = None if q_seed is None else np.asarray(q_seed, dtype=np.float64).reshape(-1)[:NUM_ARM_JOINTS]
+    try:
+        sols = _ik.solve(
+            T,
+            q_seed=q0,
+            max_solutions=None if all_branches else 1,
+            respect_limits=True,
+            seed_metric="wrap_linf",
+        )
+    except Exception:  # noqa: BLE001
+        return None
+    n = 0
+    for sol in sols:
+        n += 1
+        q = np.asarray(sol.q, dtype=np.float64).reshape(-1)[:NUM_ARM_JOINTS]
+        T_got = np.asarray(_ik.fk(q), dtype=np.float64)
+        pos_err = float(np.linalg.norm(T_got[:3, 3] - T[:3, 3]))
+        ori_err = _ori_err(T_got[:3, :3], T[:3, :3])
+        if pos_err > pos_tol or ori_err > ori_tol:
+            continue
+        return {
+            "q": q.tolist(),
+            "success": True,
+            "iters": 1,
+            "err_norm": float(getattr(sol, "fk_residual", pos_err + ori_err)),
+            "method": "analytic",
+            "pos_err": pos_err,
+            "ori_err": ori_err,
+            "backend": "ssik",
+            "n_sols": n if all_branches else len(sols),
+        }
+    return None

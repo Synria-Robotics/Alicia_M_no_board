@@ -2,6 +2,7 @@ pub mod convergence;
 pub mod governor;
 pub mod limits;
 pub mod planner;
+pub mod sync_shape;
 pub mod walker;
 
 pub use convergence::needs_trajectory;

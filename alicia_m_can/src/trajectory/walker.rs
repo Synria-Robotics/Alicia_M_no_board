@@ -5,13 +5,15 @@
 //! clamp onto `q_goal` (that was the 60 Hz go-stop-go staircase).
 //!
 //! If no new latch arrives for [`STREAM_STALE_S`], treat the last sample as a
-//! real stop: brake with `amax` and settle. Accel-limit `dq` so Damiao MIT is
-//! not a square wave. Unitree sends `dq = 0` and never catches-and-waits.
+//! real stop: brake with `amax` and settle. The window is longer than one
+//! leader serial round-trip: Alicia-D joint state is request/response, so a
+//! 25 ms gap is a late reply, not a stop. Braking on that gap is the teleop
+//! stutter. Accel-limit `dq` so Damiao MIT is not a square wave.
 
 use crate::trajectory::limits::stream_amax_from_vlim;
 
 pub const SETTLED_EPS_RAD: f64 = 5e-4;
-pub const STREAM_STALE_S: f64 = 0.025;
+pub const STREAM_STALE_S: f64 = 0.10;
 const CATCHUP_TAU_S: f64 = 0.04;
 const SETTLED_DQ_EPS: f64 = 1e-3;
 const DT_GOAL_DEFAULT: f64 = 1.0 / 60.0;
@@ -320,6 +322,26 @@ mod tests {
         live(&mut q_des, &[0.001], &mut last_dq, &[0.6], vlim, dt);
         assert!(q_des[0] > 0.001);
         assert!(last_dq[0] > 0.5);
+    }
+
+    #[test]
+    fn serial_rtt_gap_does_not_brake() {
+        // A 40 ms gap used to exceed the 25 ms stale window and brake mid-motion.
+        let mut q_des = vec![0.0];
+        let mut last_dq = vec![0.5];
+        let dq = step_joint_des(
+            &mut q_des,
+            &[0.02],
+            &mut last_dq,
+            &[0.5],
+            1.5,
+            0.002,
+            0.04,
+        );
+        assert!(
+            dq[0] > 0.2,
+            "leader reply gap must keep coasting, got dq={dq:?}"
+        );
     }
 
     #[test]
