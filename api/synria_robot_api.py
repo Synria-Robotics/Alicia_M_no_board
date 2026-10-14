@@ -387,7 +387,7 @@ def scan_ids(
 
 
 def map_alicia_d_joints(joints: Sequence[float]) -> list[float]:
-    """Map six Alicia-D joint angles (rad) onto the Alicia-M follower."""
+    """Copy six Alicia-D joint angles (rad). Joints 3, 4, and 6 are sign-flipped, then clipped to the Alicia-M limits."""
     return [float(v) for v in _native.map_alicia_d_joints(list(joints)[:6])]
 
 

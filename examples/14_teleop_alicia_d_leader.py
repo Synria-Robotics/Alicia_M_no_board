@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """Alicia-D leader → follower2 teleoperation.
 
-Uses the Rust ``Teleoperation`` loop. Joint mapping matches Alicia-M-SDK
-``Teleoperation`` with ``convert_joints_rad_from_alicia_d_to_alicia_m``:
-D zero maps to the M interval midpoint, joint 3 is scaled by travel, joints
-4 and 6 are reversed, and outputs are clipped to the Alicia-M limits.
+Uses the Rust ``Teleoperation`` loop. Leader joint angles are copied onto
+the Alicia-M follower. Joints 3, 4, and 6 are sign-flipped, then every joint
+is clipped to the Alicia-M limits.
 The first move onto the leader pose follows ``--speed``. After the follower
 catches that pose, each leader frame is a 4–8 ms segment on the 500 Hz loop.
 The follower MIT frame uses the firmware kp/kd table with ``dq = 0`` and
@@ -111,7 +110,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--no-joint-mapping",
         action="store_true",
-        help="Disable Alicia-D → Alicia-M joint mapping (SDK Teleoperation mapper)",
+        help="Send leader joints without clipping them to the Alicia-M limits",
     )
     parser.add_argument(
         "--max-joint-accel",

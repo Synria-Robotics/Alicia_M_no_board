@@ -8,6 +8,7 @@ use crate::control_loop::{compute_gravity_ff, CommandRefreshLoop};
 use crate::dynamics::{GravityCompConfig, GravityCompensator};
 use crate::error::{ArxError, Result};
 use crate::hardware::ArxMCanArm;
+use crate::trajectory::convergence::{max_abs_joint_delta, StallWatch};
 use crate::trajectory::governor::{ReferenceGovernor, DEFAULT_TORQUE_MARGIN};
 use crate::trajectory::{build_trajectory_limits_from_vlim, needs_trajectory};
 use crate::types::{ArxMCanState, MotorDiagnostic, VlimInput};
@@ -54,6 +55,9 @@ fn lock_arm(arm: &Arc<Mutex<ArxMCanArm>>) -> Result<std::sync::MutexGuard<'_, Ar
 /// Wait without retaining the arm mutex between polls.
 ///
 /// The MIT refresh thread needs this same mutex on every control tick.
+/// A joint error that stays at least 0.05 rad while the arm is slower than
+/// 0.08 rad/s for 0.3 s returns false immediately. The timeout still covers
+/// a move that is traveling.
 fn wait_until_at_target(
     arm: &Arc<Mutex<ArxMCanArm>>,
     target: &[f64],
@@ -62,20 +66,35 @@ fn wait_until_at_target(
     poll_interval: f64,
 ) -> Result<bool> {
     let deadline = Instant::now() + Duration::from_secs_f64(timeout.max(0.0));
+    let pause = Duration::from_secs_f64(poll_interval.max(0.001));
+    let mut stall = StallWatch::arm_blocked();
+    let mut prev: Option<(Vec<f64>, Instant)> = None;
     while Instant::now() < deadline {
-        let at_target = {
+        let now = Instant::now();
+        let measured = {
             let guard = lock_arm(arm)?;
             let state = guard.read_state(false)?;
-            state.arm.positions.len() >= target.len()
-                && target
-                    .iter()
-                    .zip(state.arm.positions.iter())
-                    .all(|(target, measured)| (target - measured).abs() <= tolerance)
+            if state.arm.positions.len() < target.len() {
+                None
+            } else {
+                Some(state.arm.positions[..target.len()].to_vec())
+            }
         };
-        if at_target {
-            return Ok(true);
+        if let Some(q) = measured {
+            let err = max_abs_joint_delta(&q, target);
+            if err <= tolerance {
+                return Ok(true);
+            }
+            if let Some((prev_q, prev_t)) = prev.as_ref() {
+                let dt = now.saturating_duration_since(*prev_t).as_secs_f64();
+                let vel = max_abs_joint_delta(&q, prev_q) / dt.max(1e-3);
+                if stall.observe(err, vel, now) {
+                    return Ok(false);
+                }
+            }
+            prev = Some((q, now));
         }
-        thread::sleep(Duration::from_secs_f64(poll_interval.max(0.001)));
+        thread::sleep(pause);
     }
     Ok(false)
 }
