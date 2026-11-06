@@ -1,10 +1,10 @@
 use std::sync::{Arc, Mutex};
 
 use alicia_m_can::{
-    alicia_d_rad_to_alicia_m_rad, default_config, scan_ids as rust_scan_ids, ArxMCanArm,
-    ArxMCanRobot, ArxMCanState, ArxError, GravityCompConfig, LeaderSample, ScanOptions,
-    SparkVisBridge, SparkVisConfig, TeleopConfig, TeleopSession, DEFAULT_ARM_CONTROL_MODE,
-    DEFAULT_BAUD, DEFAULT_CONTROL_HZ, DEFAULT_MAX_JOINT_ACCEL_RAD_S2, DEFAULT_MAX_JOINT_JERK_RAD_S3,
+    alicia_d_rad_to_alicia_m_rad, default_config, scan_ids as rust_scan_ids, ArxError, ArxMCanArm,
+    ArxMCanRobot, ArxMCanState, GravityCompConfig, LeaderSample, ScanOptions, SparkVisBridge,
+    SparkVisConfig, TeleopConfig, TeleopSession, DEFAULT_ARM_CONTROL_MODE, DEFAULT_BAUD,
+    DEFAULT_CONTROL_HZ, DEFAULT_MAX_JOINT_ACCEL_RAD_S2, DEFAULT_MAX_JOINT_JERK_RAD_S3,
     DEFAULT_MIT_CONTROL_HZ, DEFAULT_PORT, DEFAULT_WAIT_TOLERANCE_RAD,
 };
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
@@ -52,8 +52,18 @@ fn leader_field<'py, T: FromPyObject<'py>>(state: &Bound<'py, PyAny>, name: &str
 ///
 /// The call blocks only until that reply arrives. The 500 Hz MIT loop keeps
 /// holding the previous pose while this thread waits, so the wait does not brake.
-fn parse_leader_sample(_py: Python<'_>, leader: &Bound<'_, PyAny>) -> PyResult<Option<LeaderSample>> {
-    let state = leader.call_method1("get_robot_state", ("joint_gripper",))?;
+fn parse_leader_sample(
+    _py: Python<'_>,
+    leader: &Bound<'_, PyAny>,
+    last_sequence: u64,
+    timeout_s: f64,
+) -> PyResult<Option<LeaderSample>> {
+    let streaming = leader.hasattr("wait_for_next_robot_state")?;
+    let state = if streaming {
+        leader.call_method1("wait_for_next_robot_state", (last_sequence, timeout_s))?
+    } else {
+        leader.call_method1("get_robot_state", ("joint_gripper",))?
+    };
     if state.is_none() {
         return Ok(None);
     }
@@ -66,7 +76,22 @@ fn parse_leader_sample(_py: Python<'_>, leader: &Bound<'_, PyAny>) -> PyResult<O
     for (i, v) in angles.iter().take(6).enumerate() {
         joints[i] = *v;
     }
-    Ok(Some(LeaderSample { joints, gripper }))
+    let sequence = if streaming {
+        leader_field(&state, "sequence")?
+    } else {
+        last_sequence.saturating_add(1)
+    };
+    let captured_at_ns = if streaming {
+        leader_field(&state, "timestamp_ns")?
+    } else {
+        0
+    };
+    Ok(Some(LeaderSample {
+        joints,
+        gripper,
+        sequence,
+        captured_at_ns,
+    }))
 }
 
 #[pyclass(name = "Robot")]
@@ -84,7 +109,7 @@ impl PyRobot {
         auto_enable=true,
         arm_control_mode=DEFAULT_ARM_CONTROL_MODE,
         wait_tolerance_rad=DEFAULT_WAIT_TOLERANCE_RAD,
-        wait_timeout_sec=15.0,
+        wait_timeout_sec=7.5,
         use_gravity_ff=true,
         gravity_model_path=None,
         gravity_joint_scales=None,
@@ -173,7 +198,10 @@ impl PyRobot {
     }
 
     fn get_arm_state(&self, py: Python<'_>, request_feedback: bool) -> PyResult<PyObject> {
-        let state = self.inner_ref()?.get_arm_state(request_feedback).map_err(map_err)?;
+        let state = self
+            .inner_ref()?
+            .get_arm_state(request_feedback)
+            .map_err(map_err)?;
         state_to_py(py, &state)
     }
 
@@ -185,11 +213,7 @@ impl PyRobot {
     }
 
     #[pyo3(signature = (request_feedback=true))]
-    fn get_motor_diagnostics(
-        &self,
-        py: Python<'_>,
-        request_feedback: bool,
-    ) -> PyResult<PyObject> {
+    fn get_motor_diagnostics(&self, py: Python<'_>, request_feedback: bool) -> PyResult<PyObject> {
         let diagnostics = self
             .inner_ref()?
             .get_motor_diagnostics(request_feedback)
@@ -213,10 +237,16 @@ impl PyRobot {
     }
 
     fn get_control_loop_stats(&self, py: Python<'_>) -> PyResult<PyObject> {
-        let (sent_commands, send_errors) = self.inner_ref()?.get_control_loop_stats();
+        let robot = self.inner_ref()?;
+        let (sent_commands, send_errors) = robot.get_control_loop_stats();
+        let (overwritten_commands, overruns, missed_deadlines) =
+            robot.get_control_loop_timing_stats();
         let out = PyDict::new(py);
         out.set_item("sent_commands", sent_commands)?;
         out.set_item("send_errors", send_errors)?;
+        out.set_item("overwritten_commands", overwritten_commands)?;
+        out.set_item("overruns", overruns)?;
+        out.set_item("missed_deadlines", missed_deadlines)?;
         Ok(out.into())
     }
 
@@ -225,14 +255,8 @@ impl PyRobot {
     }
 
     #[pyo3(signature = (kp=None, kd=None))]
-    fn set_arm_mit_gains(
-        &mut self,
-        kp: Option<Vec<f64>>,
-        kd: Option<Vec<f64>>,
-    ) -> PyResult<()> {
-        self.inner_mut()?
-            .set_arm_mit_gains(kp, kd)
-            .map_err(map_err)
+    fn set_arm_mit_gains(&mut self, kp: Option<Vec<f64>>, kd: Option<Vec<f64>>) -> PyResult<()> {
+        self.inner_mut()?.set_arm_mit_gains(kp, kd).map_err(map_err)
     }
 
     #[pyo3(signature = (target_joints=None, gripper_value=None, speed=400.0, gripper_speed=100.0, wait_for_completion=false, max_joint_accel_rad_s2=None, max_joint_jerk_rad_s3=None, joint_tolerance=None, converge_timeout=None, stream=false, gripper_tolerance=None, gripper_timeout_sec=None))]
@@ -323,9 +347,7 @@ impl PyRobot {
                 .map_err(|_| PyRuntimeError::new_err("robot mutex poisoned")),
             Err(arc) => {
                 self.inner = Some(arc);
-                Err(PyRuntimeError::new_err(
-                    "robot is in use by teleoperation",
-                ))
+                Err(PyRuntimeError::new_err("robot is in use by teleoperation"))
             }
         }
     }
@@ -354,8 +376,8 @@ impl PyArm {
         config_path: Option<&str>,
     ) -> PyResult<Self> {
         let hw_yaml = config_path.map(std::path::Path::new);
-        let config = default_config(port, Some(baud), 100.0, arm_control_mode, hw_yaml)
-            .map_err(map_err)?;
+        let config =
+            default_config(port, Some(baud), 100.0, arm_control_mode, hw_yaml).map_err(map_err)?;
         Ok(Self {
             inner: ArxMCanArm::new(config, enable_gripper).map_err(map_err)?,
         })
@@ -446,7 +468,7 @@ struct PyTeleoperation {
 #[pymethods]
 impl PyTeleoperation {
     #[new]
-    #[pyo3(signature = (follower, frequency_hz=200.0, follower_speed=400.0, gripper_speed=400.0, gripper_scale=1.0, use_joint_mapping=true, max_joint_accel_rad_s2=None, max_joint_jerk_rad_s3=None))]
+    #[pyo3(signature = (follower, frequency_hz=100.0, follower_speed=400.0, gripper_speed=400.0, gripper_scale=1.0, use_joint_mapping=true, max_joint_accel_rad_s2=None, max_joint_jerk_rad_s3=None, shape_min_s=0.006, shape_max_s=0.015, stale_hold_s=0.050))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         follower: &PyRobot,
@@ -457,7 +479,29 @@ impl PyTeleoperation {
         use_joint_mapping: bool,
         max_joint_accel_rad_s2: Option<f64>,
         max_joint_jerk_rad_s3: Option<f64>,
+        shape_min_s: f64,
+        shape_max_s: f64,
+        stale_hold_s: f64,
     ) -> PyResult<Self> {
+        if !frequency_hz.is_finite() || frequency_hz <= 0.0 {
+            return Err(PyValueError::new_err(
+                "frequency_hz must be positive and finite",
+            ));
+        }
+        if !shape_min_s.is_finite()
+            || !shape_max_s.is_finite()
+            || shape_min_s <= 0.0
+            || shape_min_s > shape_max_s
+        {
+            return Err(PyValueError::new_err(
+                "shape_min_s must be > 0 and <= shape_max_s",
+            ));
+        }
+        if !stale_hold_s.is_finite() || stale_hold_s <= shape_max_s {
+            return Err(PyValueError::new_err(
+                "stale_hold_s must be greater than shape_max_s",
+            ));
+        }
         Ok(Self {
             session: Some(TeleopSession::from_shared(
                 follower.shared()?,
@@ -469,6 +513,9 @@ impl PyTeleoperation {
                     use_joint_mapping,
                     max_joint_accel_rad_s2,
                     max_joint_jerk_rad_s3,
+                    shape_min_s,
+                    shape_max_s,
+                    stale_hold_s,
                 },
             )),
         })
@@ -482,16 +529,22 @@ impl PyTeleoperation {
             .ok_or_else(|| PyRuntimeError::new_err("teleop session already stopped"))?;
         let leader = Python::with_gil(|py| leader.clone_ref(py));
         let on_state = on_state.map(|callback| Python::with_gil(|py| callback.clone_ref(py)));
+        let frequency_hz = session.config().frequency_hz;
+        let mut last_sequence = 0_u64;
+        let timeout_s = (2.0 / frequency_hz.max(1.0)).clamp(0.02, 0.2);
         session
             .start(move || {
                 Python::with_gil(|py| -> Result<Option<LeaderSample>, ArxError> {
                     let bound = leader.bind(py);
-                    let sample = parse_leader_sample(py, bound)
+                    let sample = parse_leader_sample(py, bound, last_sequence, timeout_s)
                         .map_err(|e| ArxError::Runtime(e.to_string()))?;
                     if let (Some(callback), Some(frame)) = (on_state.as_ref(), sample.as_ref()) {
                         if let Ok(joints) = PyList::new(py, frame.joints) {
                             let _ = callback.call1(py, (joints, frame.gripper));
                         }
+                    }
+                    if let Some(frame) = sample.as_ref() {
+                        last_sequence = frame.sequence;
                     }
                     Ok(sample)
                 })
@@ -499,15 +552,41 @@ impl PyTeleoperation {
             .map_err(map_err)
     }
 
-    fn stop(&mut self) {
+    fn get_stats(&self, py: Python<'_>) -> PyResult<PyObject> {
+        let session = self
+            .session
+            .as_ref()
+            .ok_or_else(|| PyRuntimeError::new_err("teleop session already stopped"))?;
+        let stats = session.stats();
+        let out = PyDict::new(py);
+        out.set_item("leader_samples", stats.leader_samples)?;
+        out.set_item("duplicate_samples", stats.duplicate_samples)?;
+        out.set_item("read_errors", stats.read_errors)?;
+        out.set_item("stale_events", stats.stale_events)?;
+        out.set_item("interval_mean_ms", stats.interval_mean_ms)?;
+        out.set_item("interval_max_ms", stats.interval_max_ms)?;
+        out.set_item("last_sample_age_ms", stats.last_sample_age_ms)?;
+        out.set_item("control_sent", stats.control_sent)?;
+        out.set_item("control_send_errors", stats.control_send_errors)?;
+        out.set_item("mailbox_overwrites", stats.mailbox_overwrites)?;
+        out.set_item("control_overruns", stats.control_overruns)?;
+        out.set_item("control_missed_deadlines", stats.control_missed_deadlines)?;
+        Ok(out.into())
+    }
+
+    fn stop(&mut self, py: Python<'_>) {
         if let Some(session) = self.session.as_mut() {
-            session.stop();
+            // The teleop worker calls back into Python to read Alicia-D.  It
+            // may therefore be waiting for the GIL while stop() joins it.  Do
+            // not hold the GIL across that join or Python and Rust deadlock.
+            py.allow_threads(|| session.stop());
         }
     }
 
-    fn disconnect_follower(&mut self) -> PyResult<()> {
+    fn disconnect_follower(&mut self, py: Python<'_>) -> PyResult<()> {
         if let Some(mut session) = self.session.take() {
-            session.disconnect_follower().map_err(map_err)?;
+            py.allow_threads(move || session.disconnect_follower())
+                .map_err(map_err)?;
         }
         Ok(())
     }
@@ -628,8 +707,14 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("DEFAULT_CONTROL_HZ", DEFAULT_CONTROL_HZ)?;
     m.add("DEFAULT_MIT_CONTROL_HZ", DEFAULT_MIT_CONTROL_HZ)?;
     m.add("DEFAULT_ARM_CONTROL_MODE", DEFAULT_ARM_CONTROL_MODE)?;
-    m.add("DEFAULT_MAX_JOINT_ACCEL_RAD_S2", DEFAULT_MAX_JOINT_ACCEL_RAD_S2)?;
-    m.add("DEFAULT_MAX_JOINT_JERK_RAD_S3", DEFAULT_MAX_JOINT_JERK_RAD_S3)?;
+    m.add(
+        "DEFAULT_MAX_JOINT_ACCEL_RAD_S2",
+        DEFAULT_MAX_JOINT_ACCEL_RAD_S2,
+    )?;
+    m.add(
+        "DEFAULT_MAX_JOINT_JERK_RAD_S3",
+        DEFAULT_MAX_JOINT_JERK_RAD_S3,
+    )?;
     m.add("DEFAULT_WAIT_TOLERANCE_RAD", DEFAULT_WAIT_TOLERANCE_RAD)?;
     m.add("VERSION", env!("CARGO_PKG_VERSION"))?;
     Ok(())

@@ -5,7 +5,8 @@ Uses the Rust ``Teleoperation`` loop. Leader joint angles are copied onto
 the Alicia-M follower. Joints 3, 4, and 6 are sign-flipped, then every joint
 is clipped to the Alicia-M limits.
 The first move onto the leader pose follows ``--speed``. After the follower
-catches that pose, each leader frame is a 4–8 ms segment on the 500 Hz loop.
+catches that pose, each fresh leader frame is reconstructed over its measured
+sample interval on the 500 Hz loop.
 The follower MIT frame uses the firmware kp/kd table with ``dq = 0`` and
 ``tau = 0``.
 
@@ -49,6 +50,9 @@ def main(args: argparse.Namespace) -> None:
             use_joint_mapping=not args.no_joint_mapping,
             max_joint_accel_rad_s2=args.max_joint_accel,
             max_joint_jerk_rad_s3=args.max_joint_jerk,
+            shape_min_s=args.shape_min_ms * 0.001,
+            shape_max_s=args.shape_max_ms * 0.001,
+            stale_hold_s=args.stale_hold_ms * 0.001,
         )
 
         print(
@@ -82,8 +86,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--frequency",
         type=float,
-        default=200.0,
-        help="Leader poll cap (Hz). The Alicia-D read still waits on the serial reply",
+        default=100.0,
+        help="Alicia-D asynchronous state query rate (default: 100 Hz)",
     )
     parser.add_argument(
         "--speed",
@@ -98,6 +102,9 @@ if __name__ == "__main__":
         help="Follower gripper speed [0,400]",
     )
     parser.add_argument("--gripper-scale", type=float, default=1.0, help="Leader → follower gripper scale")
+    parser.add_argument("--shape-min-ms", type=float, default=6.0, help="Minimum sample bridge (ms)")
+    parser.add_argument("--shape-max-ms", type=float, default=15.0, help="Maximum sample bridge (ms)")
+    parser.add_argument("--stale-hold-ms", type=float, default=50.0, help="Leader stale threshold (ms)")
     parser.add_argument("--baud", type=int, default=DEFAULT_BAUD, help="Follower USB2CAN baudrate")
     parser.add_argument(
         "--robot",

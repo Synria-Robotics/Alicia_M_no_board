@@ -35,17 +35,43 @@ pub struct SyncSegment {
     pub step: Vec<f64>,
 }
 
-pub fn begin_sync_segment(
+pub fn begin_sync_segment(q_des: &[f64], goal: &[f64], frame_dt: f64, tick_dt: f64) -> SyncSegment {
+    begin_sync_segment_with_window(
+        q_des,
+        goal,
+        frame_dt,
+        tick_dt,
+        SYNC_SHAPE_MIN_S,
+        SYNC_SHAPE_MAX_S,
+    )
+}
+
+/// Build a bridge using a window matched to the actual leader sample rate.
+/// The default 4–8 ms wrapper above preserves the firmware-compatible public
+/// behaviour; teleoperation can use a wider window for a 100 Hz leader.
+pub fn begin_sync_segment_with_window(
     q_des: &[f64],
     goal: &[f64],
     frame_dt: f64,
     tick_dt: f64,
+    shape_min_s: f64,
+    shape_max_s: f64,
 ) -> SyncSegment {
     let n = q_des.len().max(goal.len());
-    let frame_dt = if frame_dt.is_finite() && frame_dt > 0.0 {
-        frame_dt.clamp(SYNC_SHAPE_MIN_S, SYNC_SHAPE_MAX_S)
+    let shape_min_s = if shape_min_s.is_finite() && shape_min_s > 0.0 {
+        shape_min_s
     } else {
-        SYNC_SHAPE_DEFAULT_S
+        SYNC_SHAPE_MIN_S
+    };
+    let shape_max_s = if shape_max_s.is_finite() && shape_max_s >= shape_min_s {
+        shape_max_s
+    } else {
+        shape_min_s.max(SYNC_SHAPE_MAX_S)
+    };
+    let frame_dt = if frame_dt.is_finite() && frame_dt > 0.0 {
+        frame_dt.clamp(shape_min_s, shape_max_s)
+    } else {
+        SYNC_SHAPE_DEFAULT_S.clamp(shape_min_s, shape_max_s)
     };
     let tick_dt = if tick_dt.is_finite() && tick_dt > 0.0 {
         tick_dt
@@ -69,12 +95,7 @@ pub fn begin_sync_segment(
 
 /// Walk toward `goal` at `vlim` rad/s. The first teleop catch-up uses this so a
 /// large pose error is not crossed inside the 4–8 ms tracking window.
-pub fn begin_approach_segment(
-    q_des: &[f64],
-    goal: &[f64],
-    vlim: f64,
-    tick_dt: f64,
-) -> SyncSegment {
+pub fn begin_approach_segment(q_des: &[f64], goal: &[f64], vlim: f64, tick_dt: f64) -> SyncSegment {
     let n = q_des.len().max(goal.len());
     let tick_dt = if tick_dt.is_finite() && tick_dt > 0.0 {
         tick_dt
@@ -112,9 +133,7 @@ pub fn step_sync_segment(q_des: &mut [f64], seg: &SyncSegment) -> bool {
         let goal = seg.goal.get(i).copied().unwrap_or(q_des[i]);
         let step = seg.step.get(i).copied().unwrap_or(0.0);
         let remain = goal - q_des[i];
-        if remain == 0.0
-            || (step != 0.0 && (remain.abs() <= step.abs() || remain * step <= 0.0))
-        {
+        if remain == 0.0 || (step != 0.0 && (remain.abs() <= step.abs() || remain * step <= 0.0)) {
             q_des[i] = goal;
         } else {
             q_des[i] += step;
@@ -176,6 +195,20 @@ mod tests {
         let fast = begin_sync_segment(&[0.0], &[0.08], 0.008, 0.002);
         assert!((slow.step[0] - fast.step[0]).abs() < 1e-12);
         assert!((slow.step[0] - 0.02).abs() < 1e-12);
+    }
+
+    #[test]
+    fn teleop_window_tracks_a_100hz_sample() {
+        let seg = begin_sync_segment_with_window(&[0.0], &[0.10], 0.010, 0.002, 0.006, 0.015);
+        // 10 ms / 2 ms = five refresh ticks; no 8 ms catch-up clamp.
+        assert!((seg.step[0] - 0.02).abs() < 1e-12);
+    }
+
+    #[test]
+    fn teleop_window_clamps_a_stale_gap_without_snapping() {
+        let seg = begin_sync_segment_with_window(&[0.0], &[0.15], 0.050, 0.002, 0.006, 0.015);
+        // 15 ms / 2 ms = 7.5 ticks.
+        assert!((seg.step[0] - 0.02).abs() < 1e-12);
     }
 
     #[test]

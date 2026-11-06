@@ -12,8 +12,8 @@ use crate::dynamics::GravityCompensator;
 use crate::hardware::ArxMCanArm;
 use crate::trajectory::governor::ReferenceGovernor;
 use crate::trajectory::sync_shape::{
-    begin_approach_segment, begin_sync_segment, firmware_sync_gains, step_sync_segment, SyncSegment,
-    SYNC_SHAPE_DEFAULT_S,
+    begin_approach_segment, begin_sync_segment_with_window, firmware_sync_gains, step_sync_segment,
+    SyncSegment, SYNC_SHAPE_DEFAULT_S, SYNC_SHAPE_MAX_S, SYNC_SHAPE_MIN_S,
 };
 use crate::trajectory::walker::{note_stream_goal, step_joint_des};
 use crate::trajectory::{JointTrajectoryPlanner, TrajectoryLimits};
@@ -32,6 +32,10 @@ enum MotionCommand {
     SyncShape {
         q: Vec<f64>,
         vlim: f64,
+        frame_dt: Option<f64>,
+        shape_min_s: f64,
+        shape_max_s: f64,
+        reset_session: bool,
     },
     StartTrajectory {
         q_start: Vec<f64>,
@@ -47,6 +51,9 @@ struct LoopState {
     active: bool,
     sent_commands: u64,
     send_errors: u64,
+    overwritten_commands: u64,
+    overruns: u64,
+    missed_deadlines: u64,
 }
 
 pub struct CommandRefreshLoop {
@@ -74,6 +81,9 @@ impl CommandRefreshLoop {
             active: false,
             sent_commands: 0,
             send_errors: 0,
+            overwritten_commands: 0,
+            overruns: 0,
+            missed_deadlines: 0,
         }));
         let stop = Arc::new(Mutex::new(false));
         Self {
@@ -118,10 +128,9 @@ impl CommandRefreshLoop {
                 let mut sync_session = false;
                 let mut catching_up = false;
                 let mut profile_gains: Option<(Vec<f64>, Vec<f64>)> = None;
+                let mut next_tick = std::time::Instant::now() + period;
 
                 while !*loop_stop.lock().unwrap() {
-                    let t0 = std::time::Instant::now();
-
                     if let Some(cmd) = loop_state.lock().unwrap().command.take() {
                         match cmd {
                             MotionCommand::Freeze { q, vlim } => {
@@ -138,23 +147,43 @@ impl CommandRefreshLoop {
                                 hold_vlim = vlim;
                                 walk_vlim = vlim;
                             }
-                            MotionCommand::SyncShape { q, vlim } => {
+                            MotionCommand::SyncShape {
+                                q,
+                                vlim,
+                                frame_dt,
+                                shape_min_s,
+                                shape_max_s,
+                                reset_session,
+                            } => {
                                 planner = None;
                                 walking = false;
+                                if reset_session {
+                                    sync_session = false;
+                                    last_sync_at = None;
+                                }
                                 if !sync_session {
                                     catching_up = true;
                                 }
                                 sync_session = true;
                                 let now = std::time::Instant::now();
-                                let frame_dt = last_sync_at
-                                    .map(|t| now.duration_since(t).as_secs_f64())
-                                    .unwrap_or(SYNC_SHAPE_DEFAULT_S);
+                                let frame_dt = frame_dt.unwrap_or_else(|| {
+                                    last_sync_at
+                                        .map(|t| now.duration_since(t).as_secs_f64())
+                                        .unwrap_or(SYNC_SHAPE_DEFAULT_S)
+                                });
                                 last_sync_at = Some(now);
                                 let q = pad_to_len(q, q_des.len());
                                 sync = Some(if catching_up {
                                     begin_approach_segment(&q_des, &q, vlim, dt)
                                 } else {
-                                    begin_sync_segment(&q_des, &q, frame_dt, dt)
+                                    begin_sync_segment_with_window(
+                                        &q_des,
+                                        &q,
+                                        frame_dt,
+                                        dt,
+                                        shape_min_s,
+                                        shape_max_s,
+                                    )
                                 });
                                 q_goal = q;
                                 last_dq = vec![0.0; q_des.len()];
@@ -278,8 +307,7 @@ impl CommandRefreshLoop {
                                 if let Some(gov) = governor.as_mut() {
                                     let state = arm.read_state(false).map_err(|_| ())?;
                                     let q_meas = &state.arm.positions;
-                                    let tau_ff =
-                                        compute_gravity_ff(&arm, gravity.as_ref(), q_meas);
+                                    let tau_ff = compute_gravity_ff(&arm, gravity.as_ref(), q_meas);
                                     let (q_send, dq_send) = gov.apply(
                                         &q_ideal,
                                         &dq_ideal,
@@ -314,9 +342,19 @@ impl CommandRefreshLoop {
                         }
                     }
 
-                    let elapsed = t0.elapsed();
-                    if elapsed < period {
-                        thread::sleep(period - elapsed);
+                    let now = std::time::Instant::now();
+                    if now < next_tick {
+                        thread::sleep(next_tick - now);
+                        next_tick += period;
+                    } else {
+                        let mut missed = 0_u64;
+                        while next_tick <= now {
+                            next_tick += period;
+                            missed += 1;
+                        }
+                        let mut guard = loop_state.lock().unwrap();
+                        guard.overruns += 1;
+                        guard.missed_deadlines += missed;
                     }
                 }
             })
@@ -327,6 +365,9 @@ impl CommandRefreshLoop {
 
     fn enqueue(&self, command: MotionCommand) {
         let mut guard = self.state.lock().unwrap();
+        if guard.command.is_some() {
+            guard.overwritten_commands += 1;
+        }
         guard.command = Some(command);
     }
 
@@ -342,7 +383,33 @@ impl CommandRefreshLoop {
 
     /// Walk `q_des` to `joints`. The first catch-up is limited to `vlim`.
     pub fn set_sync_shape(&self, joints: Vec<f64>, vlim: f64) {
-        self.enqueue(MotionCommand::SyncShape { q: joints, vlim });
+        self.enqueue(MotionCommand::SyncShape {
+            q: joints,
+            vlim,
+            frame_dt: None,
+            shape_min_s: SYNC_SHAPE_MIN_S,
+            shape_max_s: SYNC_SHAPE_MAX_S,
+            reset_session: false,
+        });
+    }
+
+    pub fn set_sync_shape_timed(
+        &self,
+        joints: Vec<f64>,
+        vlim: f64,
+        frame_dt: f64,
+        shape_min_s: f64,
+        shape_max_s: f64,
+        reset_session: bool,
+    ) {
+        self.enqueue(MotionCommand::SyncShape {
+            q: joints,
+            vlim,
+            frame_dt: Some(frame_dt),
+            shape_min_s,
+            shape_max_s,
+            reset_session,
+        });
     }
 
     pub fn start_trajectory(
@@ -366,6 +433,15 @@ impl CommandRefreshLoop {
     pub fn stats(&self) -> (u64, u64) {
         let guard = self.state.lock().unwrap();
         (guard.sent_commands, guard.send_errors)
+    }
+
+    pub fn timing_stats(&self) -> (u64, u64, u64) {
+        let guard = self.state.lock().unwrap();
+        (
+            guard.overwritten_commands,
+            guard.overruns,
+            guard.missed_deadlines,
+        )
     }
 
     pub fn resume(&self) {

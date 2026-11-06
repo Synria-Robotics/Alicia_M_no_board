@@ -27,7 +27,7 @@ pub const DEFAULT_GRIPPER_SPEED: f64 = 100.0;
 pub const DEFAULT_GRIPPER_WAIT_TOLERANCE: f64 = 20.0;
 pub const DEFAULT_GRIPPER_WAIT_TIMEOUT_SEC: f64 = 5.0;
 pub const DEFAULT_WAIT_TOLERANCE_RAD: f64 = 0.02;
-pub const DEFAULT_WAIT_TIMEOUT_SEC: f64 = 15.0;
+pub const DEFAULT_WAIT_TIMEOUT_SEC: f64 = 7.5;
 pub const HOME_JOINTS: [f64; NUM_ARM_JOINTS] = [0.0; NUM_ARM_JOINTS];
 
 /// MIT frames sent immediately after enable, before the refresh thread's first tick.
@@ -276,6 +276,12 @@ impl ArxMCanRobot {
             .map_or((0, 0), CommandRefreshLoop::stats)
     }
 
+    pub fn get_control_loop_timing_stats(&self) -> (u64, u64, u64) {
+        self.refresh
+            .as_ref()
+            .map_or((0, 0, 0), CommandRefreshLoop::timing_stats)
+    }
+
     pub fn get_arm_mit_gains(&self) -> Result<(Vec<f64>, Vec<f64>)> {
         lock_arm(&self.arm)?.get_arm_mit_gains()
     }
@@ -391,7 +397,13 @@ impl ArxMCanRobot {
         }
 
         let state = lock_arm(&self.arm)?.read_state(true)?;
-        let q_meas: Vec<f64> = state.arm.positions.iter().take(NUM_ARM_JOINTS).copied().collect();
+        let q_meas: Vec<f64> = state
+            .arm
+            .positions
+            .iter()
+            .take(NUM_ARM_JOINTS)
+            .copied()
+            .collect();
         let dq_meas: Vec<f64> = state
             .arm
             .velocities
@@ -516,6 +528,34 @@ impl ArxMCanRobot {
         let target: Vec<f64> = positions.iter().take(NUM_ARM_JOINTS).copied().collect();
         if let Some(ref refresh) = self.refresh {
             refresh.set_sync_shape(target.clone(), self.vlim_from_speed(speed));
+            self.commanded_joints = target;
+            return Ok(());
+        }
+        self.send_joints_direct(&target, 0.0)
+    }
+
+    /// Teleoperation variant that reconstructs each fresh leader sample over
+    /// its measured inter-arrival interval.  ``reset_session`` forces a
+    /// speed-limited approach after a stale/disconnected leader recovers.
+    pub fn shape_arm_joints_timed(
+        &mut self,
+        positions: &[f64],
+        speed: f64,
+        frame_dt: f64,
+        shape_min_s: f64,
+        shape_max_s: f64,
+        reset_session: bool,
+    ) -> Result<()> {
+        let target: Vec<f64> = positions.iter().take(NUM_ARM_JOINTS).copied().collect();
+        if let Some(ref refresh) = self.refresh {
+            refresh.set_sync_shape_timed(
+                target.clone(),
+                self.vlim_from_speed(speed),
+                frame_dt,
+                shape_min_s,
+                shape_max_s,
+                reset_session,
+            );
             self.commanded_joints = target;
             return Ok(());
         }

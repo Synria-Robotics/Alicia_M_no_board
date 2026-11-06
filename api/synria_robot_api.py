@@ -29,7 +29,7 @@ DEFAULT_MAX_JOINT_ACCEL_RAD_S2 = getattr(_native, "DEFAULT_MAX_JOINT_ACCEL_RAD_S
 DEFAULT_MAX_JOINT_JERK_RAD_S3 = getattr(_native, "DEFAULT_MAX_JOINT_JERK_RAD_S3", 50.0)
 DEFAULT_ARM_CONTROL_MODE = getattr(_native, "DEFAULT_ARM_CONTROL_MODE", "mit")
 DEFAULT_WAIT_TOLERANCE_RAD = getattr(_native, "DEFAULT_WAIT_TOLERANCE_RAD", 0.02)
-DEFAULT_WAIT_TIMEOUT_SEC = 15.0
+DEFAULT_WAIT_TIMEOUT_SEC = 7.5
 HOME_JOINTS = (0.0,) * NUM_ARM_JOINTS
 DEFAULT_URDF = _kinematics.DEFAULT_URDF
 DEFAULT_BASE_LINK = _kinematics.DEFAULT_BASE_LINK
@@ -395,7 +395,8 @@ class Teleoperation:
     """Alicia-D leader → follower. The 500 Hz segment runs in Rust.
 
     The first move onto the leader pose follows ``follower_speed``. After that,
-    each leader frame is a 4–8 ms segment. ``on_state`` receives
+    each fresh leader frame is reconstructed over its measured sample interval.
+    ``on_state`` receives
     ``(joints, gripper, loop_count, run_status_text, run_status_raw)``.
     """
 
@@ -403,26 +404,44 @@ class Teleoperation:
         self,
         follower: Any,
         *,
-        frequency_hz: float = 200.0,
+        frequency_hz: float = 100.0,
         follower_speed: float = 80.0,
         gripper_speed: float = 200.0,
         gripper_scale: float = 1.0,
         use_joint_mapping: bool = True,
+        shape_min_s: float = 0.006,
+        shape_max_s: float = 0.015,
+        stale_hold_s: float = 0.050,
         on_state: Callable[..., None] | None = None,
         **kwargs: Any,
     ) -> None:
+        frequency_hz = float(frequency_hz)
+        shape_min_s = float(shape_min_s)
+        shape_max_s = float(shape_max_s)
+        stale_hold_s = float(stale_hold_s)
+        if not math.isfinite(frequency_hz) or frequency_hz <= 0.0:
+            raise ValueError("frequency_hz must be positive and finite")
+        if not 0.0 < shape_min_s <= shape_max_s:
+            raise ValueError("shape_min_s must be > 0 and <= shape_max_s")
+        if stale_hold_s <= shape_max_s:
+            raise ValueError("stale_hold_s must be greater than shape_max_s")
         native = getattr(follower, "_robot", follower)
         self._on_state = on_state
+        self._teleop_frequency_hz = frequency_hz
         self._leader: Any = None
         self._loop_count = 0
         self._running = threading.Event()
+        self._owns_leader_stream = False
         self._teleop = _native.Teleoperation(
             native,
-            frequency_hz=float(frequency_hz),
+            frequency_hz=self._teleop_frequency_hz,
             follower_speed=float(follower_speed),
             gripper_speed=float(gripper_speed),
             gripper_scale=float(gripper_scale),
             use_joint_mapping=use_joint_mapping,
+            shape_min_s=shape_min_s,
+            shape_max_s=shape_max_s,
+            stale_hold_s=stale_hold_s,
             **kwargs,
         )
 
@@ -431,6 +450,13 @@ class Teleoperation:
         if arm is None:
             raise RuntimeError("leader arm is required to start teleoperation")
         self._leader = arm
+
+        start_stream = getattr(arm, "start_state_stream", None)
+        is_streaming = getattr(arm, "is_state_stream_running", None)
+        already_streaming = bool(is_streaming()) if callable(is_streaming) else False
+        if callable(start_stream):
+            start_stream(self._teleop_frequency_hz)
+            self._owns_leader_stream = not already_streaming
 
         def _on_sample(joints: Any, gripper: float) -> None:
             parser = getattr(getattr(arm, "servo_driver", None), "data_parser", None)
@@ -446,12 +472,34 @@ class Teleoperation:
                     raw,
                 )
 
-        self._teleop.start(arm, on_state=_on_sample)
+        try:
+            self._teleop.start(arm, on_state=_on_sample)
+        except Exception:
+            if self._owns_leader_stream:
+                stop_stream = getattr(arm, "stop_state_stream", None)
+                if callable(stop_stream):
+                    stop_stream()
+            self._owns_leader_stream = False
+            raise
         self._running.set()
 
     def stop(self) -> None:
         self._running.clear()
         self._teleop.stop()
+        if self._owns_leader_stream and self._leader is not None:
+            stop_stream = getattr(self._leader, "stop_state_stream", None)
+            if callable(stop_stream):
+                stop_stream()
+        self._owns_leader_stream = False
+
+    def get_stats(self) -> dict[str, Any]:
+        """Return native teleop timing plus Alicia-D stream diagnostics."""
+        stats = dict(self._teleop.get_stats())
+        if self._leader is not None:
+            get_stream_stats = getattr(self._leader, "get_state_stream_stats", None)
+            if callable(get_stream_stats):
+                stats["leader_stream"] = dict(get_stream_stats())
+        return stats
 
     def disconnect_follower(self) -> None:
         self.stop()
