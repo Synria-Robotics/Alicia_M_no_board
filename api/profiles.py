@@ -14,9 +14,30 @@ ProfileName = Literal["px6d", "arx", "arx_cam", "follower", "follower2"]
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _CONFIG_ROOT = _REPO_ROOT / "alicia_m_can" / "config"
 _MODELS_ROOT = _REPO_ROOT / "alicia_m_can" / "models"
-_URDF_ROOT = Path(
-    "/home/ubuntu/Alicia/Synria-Robot-Descriptions/synriard/urdf/Alicia_M_v1_2"
-)
+
+
+def _resolve_urdf_root() -> Path:
+    import os
+
+    env = str(os.environ.get("SYNRIARD_URDF_ROOT") or "").strip()
+    if env:
+        return Path(env).expanduser()
+    try:
+        import synriard
+
+        return Path(synriard.__file__).resolve().parent / "urdf" / "Alicia_M_v1_2"
+    except Exception:
+        pass
+    for candidate in (
+        Path("/home/ubuntu/Synria/Synria-Robot-Descriptions/synriard/urdf/Alicia_M_v1_2"),
+        Path("/home/ubuntu/Alicia/Synria-Robot-Descriptions/synriard/urdf/Alicia_M_v1_2"),
+    ):
+        if candidate.is_dir():
+            return candidate
+    return Path("/home/ubuntu/Synria/Synria-Robot-Descriptions/synriard/urdf/Alicia_M_v1_2")
+
+
+_URDF_ROOT = _resolve_urdf_root()
 
 DEFAULT_PROFILE: ProfileName = "px6d"
 

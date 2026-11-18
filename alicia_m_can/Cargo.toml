@@ -11,13 +11,14 @@ name = "alicia_m_can"
 path = "src/lib.rs"
 
 [dependencies]
-motor_core = { path = "../../motorbridge/motor_core" }
-motor_vendor_damiao = { path = "../../motorbridge/motor_vendors/damiao" }
+# Path deps live under PTI_vial/third_party (motorbridge + robocore_dynamics_ffi + RoboCore).
+motor_core = { path = "../../../Github/PTI_vial/third_party/motorbridge/motor_core" }
+motor_vendor_damiao = { path = "../../../Github/PTI_vial/third_party/motorbridge/motor_vendors/damiao" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
 thiserror = "2"
-robocore_dynamics_ffi = { path = "../../robocore_dynamics_ffi" }
+robocore_dynamics_ffi = { path = "../../../Github/PTI_vial/third_party/robocore_dynamics_ffi" }
 ruckig = "0.19"
 ureq = { version = "2", default-features = false, features = ["json"] }
 

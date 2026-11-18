@@ -3,10 +3,12 @@
 Rust robot SDK for Alicia M arms (Damiao motors over USB2CAN), with a Python API
 styled like [Alicia-D-SDK](https://github.com/Synria-Robotics/Alicia-D-SDK).
 
+This tree is the ARX / no-board driver used by PTI_vial. **Alicia-M-SDK is not required.**
+
 ## Layout
 
 ```text
-alicia_m_rs/
+Alicia_M_no_board/
 ├── alicia_m_can/          # Rust library + config/profiles/{px6d,arx,arx_cam,follower}
 ├── alicia_m_can_py/       # PyO3 extension (_native)
 ├── api/                   # profiles, kinematics, SynriaRobotAPI
@@ -14,11 +16,20 @@ alicia_m_rs/
 └── pyproject.toml
 ```
 
+## Repo path dependencies
+
+`alicia_m_can` links local crates from the PTI_vial third_party tree:
+
+| Crate | Path |
+|-------|------|
+| `motor_core` / `motor_vendor_damiao` | `/home/ubuntu/Github/PTI_vial/third_party/motorbridge/...` |
+| `robocore_dynamics_ffi` | `/home/ubuntu/Github/PTI_vial/third_party/robocore_dynamics_ffi` (wraps RoboCore `@ v2.5.1-dev` native dynamics) |
+
 ## Build Rust
 
 ```bash
 source "$HOME/.cargo/env"
-cd /home/ubuntu/Synria/arx/Rust/alicia_m_rs
+cd /home/ubuntu/Synria/Alicia_M_no_board
 cargo build -p alicia_m_can
 cargo test -p alicia_m_can
 ```
@@ -27,11 +38,13 @@ cargo test -p alicia_m_can
 
 Requires `python3-dev` (Ubuntu: `sudo apt install python3-dev`).
 
-Activate your Python environment first (e.g. `conda activate geo`), then:
+Use the PTI_vial venv (not conda):
 
 ```bash
+source /home/ubuntu/Github/PTI_vial/.venv/bin/activate
 pip install maturin
-cd /home/ubuntu/Synria/arx/Rust/alicia_m_rs
+export PYO3_PYTHON=/home/ubuntu/Github/PTI_vial/.venv/bin/python
+cd /home/ubuntu/Synria/Alicia_M_no_board
 maturin develop
 ```
 
@@ -78,26 +91,3 @@ Ordered basic → advanced:
 | 06 | `forward_kinematics` | FK (RoboCore) |
 | 07 | `inverse_kinematics` | IK + optional motion |
 | 08 | `zero_current_position` | Motor zero (destructive) |
-| 09 | `mit_gravity_hold` | MIT + gravity FF hold |
-| 10 | `verify_poses` | Calibration pose verify |
-| 11 | `diagnose_mit_joint` | Single-joint MIT debug |
-| 12 | `gravity_calibrate` | Gravity FF calibration |
-| 13 | `mit_gain_autotune` | Kp/Kd autotune |
-| 14 | `teleop_alicia_d_leader` | Alicia-D leader teleop |
-| 15 | `sparkvis_control` | SparkVis WebSocket bridge |
-
-```bash
-sudo chmod 666 /dev/ttyACM0
-
-python examples/01_read_state.py
-python examples/02_scan_ids.py
-python examples/03_move_joint.py "0,-0.2,0,0,0,0" --speed 60
-python examples/06_forward_kinematics.py
-python examples/07_inverse_kinematics.py --execute --speed 60
-python examples/10_verify_poses.py --speed 60 --motion-tolerance 0.02
-python examples/14_teleop_alicia_d_leader.py --leader-port /dev/ttyACM0 --follower-port /dev/ttyACM1
-python examples/15_sparkvis_control.py --dry-run
-```
-
-Hardware config lives under `alicia_m_can/config/profiles/<robot>/alicia_m_can_dm.yaml`
-(default robot: `px6d`).

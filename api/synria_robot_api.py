@@ -296,11 +296,6 @@ class SynriaRobotAPI:
             q0 = self.get_ik_seed_joints()
             strategy = "random"
 
-        if "q_prev" not in ik_kwargs:
-            prev = getattr(self, "_ik_q_prev", None)
-            ik_kwargs["q_prev"] = prev if prev is not None else q0
-        ik_kwargs.setdefault("ema_state", self)
-
         result = _kinematics.inverse_kinematics(
             self.robot_model,
             target_pose,
