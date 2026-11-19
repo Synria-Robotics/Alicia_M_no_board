@@ -25,7 +25,7 @@ from common import DEFAULT_BAUD, DEFAULT_PORT
 import alicia_d_sdk
 
 from api.profiles import PROFILE_NAMES
-from api.synria_robot_api import Teleoperation, create_robot
+from api.robot import Teleoperation, create_robot
 
 FOLLOWER_ROBOT = "follower2"
 

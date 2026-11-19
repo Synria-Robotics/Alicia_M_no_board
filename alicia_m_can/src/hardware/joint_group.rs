@@ -12,6 +12,7 @@ use crate::error::{ArxError, Result};
 enum GroupMode {
     Mit,
     PosVel,
+    ForcePos,
 }
 
 const STATUS_ENABLED: u8 = 0x1;
@@ -253,12 +254,18 @@ impl JointGroup {
         Ok(())
     }
 
-    pub fn send_mit(
-        &self,
-        pos: &[f64],
-        vel: Option<&[f64]>,
-        tau_ff: Option<&[f64]>,
-    ) -> Result<()> {
+    /// Internal compatibility for hardware configurations that support a
+    /// force-limited position command. Business code does not select modes.
+    pub fn mode_force_pos(&mut self) -> Result<()> {
+        self.mode = GroupMode::ForcePos;
+        Ok(())
+    }
+
+    pub fn send_force_pos(&self, pos: &[f64], vlim: Option<&[f64]>, _torque_ratio: f64) {
+        self.send_pos_vel(pos, vlim);
+    }
+
+    pub fn send_mit(&self, pos: &[f64], vel: Option<&[f64]>, tau_ff: Option<&[f64]>) -> Result<()> {
         for (i, joint) in self.joint_cfgs.iter().enumerate() {
             let motor = &self.motors[&joint.name];
             let p = pos.get(i).copied().unwrap_or(0.0) as f32;
@@ -269,6 +276,27 @@ impl JointGroup {
             motor.send_cmd_mit(p, v, kp, kd, tau)?;
         }
         Ok(())
+    }
+
+    /// Gripper-only MIT command with explicit gains. Business code uses this
+    /// through `GripperController`; it is not a public Python operation.
+    pub fn send_mit_with_gains(
+        &mut self,
+        pos: f64,
+        vel: f64,
+        kp: f64,
+        kd: f64,
+        tau_ff: f64,
+    ) -> Result<()> {
+        self.ensure_mit_mode()?;
+        let motor = self
+            .joint_names
+            .first()
+            .and_then(|name| self.motors.get(name))
+            .ok_or_else(|| ArxError::Runtime("gripper group is empty".into()))?;
+        motor
+            .send_cmd_mit(pos as f32, vel as f32, kp as f32, kd as f32, tau_ff as f32)
+            .map_err(Into::into)
     }
 
     pub fn mit_gains(&self) -> (Vec<f64>, Vec<f64>) {

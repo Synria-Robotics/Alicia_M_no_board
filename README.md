@@ -11,7 +11,7 @@ This tree is the ARX / no-board driver used by PTI_vial. **Alicia-M-SDK is not r
 Alicia_M_no_board/
 ├── alicia_m_can/          # Rust library + config/profiles/{px6d,arx,arx_cam,follower}
 ├── alicia_m_can_py/       # PyO3 extension (_native)
-├── api/                   # profiles, kinematics, SynriaRobotAPI
+├── api/                   # robot, gripper, diagnostics, kinematics, profiles
 ├── examples/
 └── pyproject.toml
 ```
@@ -58,7 +58,7 @@ python examples/01_read_state.py --port /dev/ttyACM0
 ## Python usage
 
 ```python
-from api.synria_robot_api import create_robot
+from api import create_robot
 
 robot = create_robot(port="/dev/ttyACM0")
 try:
@@ -68,9 +68,17 @@ finally:
     robot.disconnect()
 ```
 
-Higher-level helpers are also exported from `api.synria_robot_api`:
+The user-facing API is intentionally small:
 
-- `Arm` — low-level connect / read_state / scan_ids / set_zero
+```python
+robot.arm.move_joints(q)
+robot.arm.move_pose(pose)
+robot.gripper.close()   # guarded contact + hold + thermal protection
+robot.gripper.open()
+robot.gripper.hold()
+robot.diagnostics.read()
+```
+
 - `scan_ids()` — standalone motor ID scan without enabling the arm
 - `Teleoperation` — Alicia-D leader → Alicia M CAN follower (Rust loop)
 - `SparkVisBridge` — SparkVis WebSocket drag-to-robot bridge

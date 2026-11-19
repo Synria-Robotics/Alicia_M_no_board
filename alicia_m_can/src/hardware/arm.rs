@@ -1,13 +1,9 @@
-use std::thread;
-use std::time::{Duration, Instant};
-
 use crate::config::{default_config, ArxMCanConfig};
 use crate::error::{ArxError, Result};
 use crate::hardware::bus::ArxMCan;
-use crate::types::{ArxMCanState, JointState, MotorDiagnostic, MotorState, VlimInput};
-use crate::utils::gripper::{motor_to_user, user_to_motor, validate_gripper_value};
-use crate::utils::speed_mapping::speed_to_gripper_vlim_rad_s;
 use crate::scan::{scan_ids as run_scan, ScanOptions};
+use crate::types::{ArxMCanState, JointState, MotorDiagnostic, MotorState, VlimInput};
+use crate::utils::gripper::{motor_to_user, user_to_motor};
 
 pub struct ArxMCanArm {
     config: ArxMCanConfig,
@@ -296,9 +292,7 @@ impl ArxMCanArm {
 
         let robot = self.robot.as_mut().ok_or(ArxError::NotConnected)?;
         if is_posvel {
-            robot
-                .arm_mut()?
-                .send_pos_vel(positions, vlim.as_deref());
+            robot.arm_mut()?.send_pos_vel(positions, vlim.as_deref());
         } else if is_mit {
             robot.arm_mut()?.send_mit(positions, None, None)?;
         } else {
@@ -406,59 +400,34 @@ impl ArxMCanArm {
 
     pub fn set_zero(&mut self) -> Result<()> {
         self.require_connected()?;
-        self.robot.as_ref().ok_or(ArxError::NotConnected)?.set_zero()
+        self.robot
+            .as_ref()
+            .ok_or(ArxError::NotConnected)?
+            .set_zero()
     }
 
-    pub fn set_gripper(
+    pub fn set_gripper_mit(
         &mut self,
         value: f64,
-        speed: f64,
-        hz: Option<f64>,
+        velocity: f64,
+        kp: f64,
+        kd: f64,
+        tau_ff: f64,
         require_enabled: bool,
-        wait: bool,
-        tolerance: f64,
-        timeout: f64,
-    ) -> Result<bool> {
+    ) -> Result<()> {
         self.require_connected()?;
-        if self.config.gripper.is_none() {
-            return Ok(true);
-        }
         if require_enabled && !self.enabled {
             return Err(ArxError::NotEnabled);
         }
-        let gripper = self.config.gripper.as_ref().unwrap();
-        let motor_target = user_to_motor(
+        let target = user_to_motor(
             value,
             self.config.gripper_closed_value,
             self.config.gripper_open_value,
         );
-        let max_vlim = if gripper.pv_vlim > 0.0 {
-            gripper.pv_vlim
-        } else {
-            3.0
-        };
-        let vlim = speed_to_gripper_vlim_rad_s(speed, max_vlim);
-        if vlim <= 0.0 {
-            return Ok(true);
-        }
-        if !wait {
-            return self
-                .set_gripper_motor_value(motor_target, vlim, require_enabled)
-                .map(|_| true);
-        }
-        let state = self.read_state(true)?;
-        if state.gripper.is_none() {
-            self.set_gripper_motor_value(motor_target, 0.0, require_enabled)?;
-            return Ok(true);
-        }
-        self.move_gripper_mit(
-            state.gripper.as_ref().unwrap().position,
-            motor_target,
-            vlim,
-            hz,
-            require_enabled,
-        )?;
-        self.wait_until_gripper_at_target(validate_gripper_value(value), tolerance, timeout, 0.01)
+        let robot = self.robot.as_mut().ok_or(ArxError::NotConnected)?;
+        robot
+            .gripper_mut()?
+            .send_mit_with_gains(target, velocity, kp, kd, tau_ff)
     }
 
     pub fn get_gripper_value(&self, request_feedback: bool) -> Result<Option<f64>> {
@@ -476,26 +445,6 @@ impl ArxMCanArm {
             self.config.gripper_closed_value,
             self.config.gripper_open_value,
         )))
-    }
-
-    pub fn wait_until_gripper_at_target(
-        &self,
-        target: f64,
-        tolerance: f64,
-        timeout: f64,
-        poll_interval: f64,
-    ) -> Result<bool> {
-        let target_user = validate_gripper_value(target);
-        let deadline = Instant::now() + Duration::from_secs_f64(timeout.max(0.0));
-        while Instant::now() < deadline {
-            if let Some(current) = self.get_gripper_value(true)? {
-                if (current - target_user).abs() <= tolerance {
-                    return Ok(true);
-                }
-            }
-            thread::sleep(Duration::from_secs_f64(poll_interval.max(0.001)));
-        }
-        Ok(false)
     }
 
     pub fn set_gripper_motor_value(
@@ -530,33 +479,6 @@ impl ArxMCanArm {
             .as_ref()
             .ok_or(ArxError::NotConnected)?
             .poll_gripper_button_event()
-    }
-
-    fn move_gripper_mit(
-        &mut self,
-        start_rad: f64,
-        end_rad: f64,
-        vlim_rad_s: f64,
-        hz: Option<f64>,
-        require_enabled: bool,
-    ) -> Result<()> {
-        let control_hz = hz.unwrap_or(self.config.control_hz);
-        let period = 1.0 / control_hz.max(1.0);
-        let delta = end_rad - start_rad;
-        if delta.abs() < 1e-6 {
-            return self.set_gripper_motor_value(end_rad, 0.0, require_enabled);
-        }
-        let duration = (delta.abs() / vlim_rad_s.max(0.01)).max(period);
-        let steps = ((duration * control_hz).ceil() as usize).max(1);
-        let vel_ff = if delta > 0.0 { vlim_rad_s } else { -vlim_rad_s };
-        for step in 1..=steps {
-            let t = step as f64 / steps as f64;
-            let pos = start_rad + delta * t;
-            let cmd_vel = if step < steps { vel_ff } else { 0.0 };
-            self.set_gripper_motor_value(pos, cmd_vel, require_enabled)?;
-            thread::sleep(Duration::from_secs_f64(period));
-        }
-        self.set_gripper_motor_value(end_rad, 0.0, require_enabled)
     }
 
     fn resolve_vlim_array(&self, vlim_rad_s: Option<VlimInput>) -> Result<Option<Vec<f64>>> {

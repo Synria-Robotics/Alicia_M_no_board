@@ -1,10 +1,10 @@
-"""SynriaRobotAPI — user-level interface for ARX-M-CAN arms."""
+"""Thin Python composition layer for the Alicia-M robot."""
 
 from __future__ import annotations
 
 import math
-import re
 import threading
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Sequence
@@ -42,7 +42,6 @@ def _to_rad(values: Sequence[float], joint_format: str) -> list[float]:
     return [float(v) for v in values[:NUM_ARM_JOINTS]]
 
 
-_UNEXPECTED_KWARG = re.compile(r"unexpected keyword argument ['\"](\w+)['\"]")
 _GRIPPER_CLOSED_MOTOR_RAD = 0.0
 _GRIPPER_OPEN_MOTOR_RAD = 3.0
 
@@ -72,33 +71,7 @@ def _motor_rad_to_user_gripper(position: Any) -> float | None:
     return _as_user_gripper((motor - _GRIPPER_CLOSED_MOTOR_RAD) / span * 1000.0)
 
 
-def _construct_native(cls: Any, kwargs: dict[str, Any]) -> Any:
-    """Build a pyo3 class, dropping kwargs the installed ``_native`` binary does not accept."""
-    pending = dict(kwargs)
-    while True:
-        try:
-            return cls(**pending)
-        except TypeError as exc:
-            match = _UNEXPECTED_KWARG.search(str(exc))
-            if match is None or match.group(1) not in pending:
-                raise
-            pending.pop(match.group(1))
-
-
-def _invoke_native(fn: Any, *args: Any) -> Any:
-    """Call a native method, dropping trailing positional args the binary does not accept."""
-    pending = list(args)
-    while True:
-        try:
-            return fn(*pending)
-        except TypeError as exc:
-            msg = str(exc)
-            if "positional argument" not in msg or len(pending) == 0:
-                raise
-            pending.pop()
-
-
-class SynriaRobotAPI:
+class Robot:
     """Unified user API for ARX-M-CAN (Damiao motors over USB2CAN)."""
 
     def __init__(
@@ -143,7 +116,12 @@ class SynriaRobotAPI:
             kwargs["config_path"] = str(config_path)
         self._wait_tolerance_rad = float(wait_tolerance_rad)
         self._wait_timeout_sec = float(wait_timeout_sec)
-        self._robot = _construct_native(_native.Robot, kwargs)
+        self._robot = _native.Robot(**kwargs)
+        from .gripper import Gripper
+        from .diagnostics import Diagnostics
+        self.gripper = Gripper(self._robot)
+        self.diagnostics = Diagnostics(self._robot)
+        self.arm = self
 
     @property
     def arm_control_mode(self) -> str:
@@ -152,13 +130,6 @@ class SynriaRobotAPI:
     @property
     def enabled(self) -> bool:
         return bool(self._robot.enabled())
-
-    def connect(self) -> bool:
-        """Connect is performed in __init__; kept for Alicia-D API parity."""
-        return True
-
-    def is_connected(self) -> bool:
-        return True
 
     def get_robot_state(self, info_type: str = "joint") -> Any:
         joints = self._robot.get_joint_positions()
@@ -185,9 +156,70 @@ class SynriaRobotAPI:
             return None
         return _motor_rad_to_user_gripper(gripper["position"])
 
+    def get_motor_diagnostics(self, request_feedback: bool = True) -> list[dict[str, Any]]:
+        return [dict(item) for item in self._robot.get_motor_diagnostics(bool(request_feedback))]
+
+
+    def grasp_lift_test(
+        self, *, height: float = 0.1, hold_time: float = 600.0,
+        contact_torque_nm: float = 0.25, max_temperature_c: float = 50.0,
+        close_step: float = 20.0, close_speed: float = 20.0,
+        gripper_torque_ratio: float = 0.15,
+        gripper_control_mode: str = "mit",
+        gripper_kp_close: float = 2.0,
+        gripper_kd_close: float = 0.1,
+        gripper_kp_hold: float = 2.0,
+        gripper_kd_hold: float = 0.1,
+        gripper_hold_margin: float = 60.0,
+        gripper_hold_torque_nm: float = 0.8,
+    ) -> dict[str, Any]:
+        """Test-only workflow; grasp policy lives in the Rust gripper controller."""
+        lift_height_m, hold_duration_sec = float(height), float(hold_time)
+        if lift_height_m <= 0 or hold_duration_sec < 0:
+            raise ValueError("height must be positive and hold_time non-negative")
+        base = self.get_pose()
+        q = [float(v) for v in base["quaternion_xyzw"]]
+        p = [float(v) for v in base["position"]]
+        contact = self.gripper.close()
+        if not contact["success"]:
+            return {"ok": False, "stage": "grasp", "reason": contact["reason"], "contact": contact}
+        target = [p[0], p[1], p[2] + lift_height_m, *q]
+        motion = self.set_pose(target, speed=10.0, wait_for_completion=True,
+                               pos_tol=0.005, ori_tol=0.08, max_iters=400)
+        motion_warning = None if motion.get("motion_converged") else "motion did not converge"
+        deadline = time.monotonic() + hold_duration_sec
+        samples = []
+        torque_loss_samples = 0
+        try:
+            while time.monotonic() < deadline:
+                self.gripper.hold()
+                motors = self.diagnostics.read()
+                g = next((m for m in motors if m.get("motor_id") == 7), None)
+                thermal = self.diagnostics.thermal(max_temperature_c=max_temperature_c)
+                torque = abs(float(g.get("torque", 0.0))) if g else 0.0
+                samples.append({"elapsed": hold_duration_sec - max(0, deadline - time.monotonic()),
+                                "torque_nm": torque, "temperature_c": thermal.get("hottest", {}).get("mos_temperature_c")})
+                torque_loss_samples = torque_loss_samples + 1 if torque < contact_torque_nm * 0.5 else 0
+                if not thermal["ok"] or torque_loss_samples >= 3:
+                    self.set_pose([*p, *q], speed=10.0, wait_for_completion=True,
+                                  pos_tol=0.005, ori_tol=0.08, max_iters=400)
+                    return {"ok": False, "stage": "hold", "reason": "thermal limit" if not thermal["ok"] else "torque lost", "motion_warning": motion_warning, "thermal_trip": thermal, "samples": samples}
+                time.sleep(0.5)
+        finally:
+            self.set_pose([*p, *q], speed=10.0, wait_for_completion=True,
+                          pos_tol=0.005, ori_tol=0.08, max_iters=400)
+            self.gripper.release()
+        return {"ok": True, "stage": "hold", "contact": contact, "motion_warning": motion_warning, "samples": samples}
+
     def get_ik_seed_joints(self) -> list[float]:
         """MIT commanded joints (reference, not lagging encoder feedback)."""
         return list(self._robot.get_commanded_joints()[:NUM_ARM_JOINTS])
+
+    def move_joints(self, joints: Sequence[float], **kwargs: Any) -> bool:
+        return self.set_robot_state(joints, **kwargs)
+
+    def move_pose(self, pose: Sequence[float], **kwargs: Any) -> dict[str, Any]:
+        return self.set_pose(pose, **kwargs)
 
     def set_robot_state(
         self,
@@ -210,8 +242,7 @@ class SynriaRobotAPI:
         """Command joints. ``stream=False`` + wait is Ruckig Phase P2P; ``stream=True`` is the 500 Hz walker."""
         joints = None if target_joints is None else _to_rad(target_joints, joint_format)
         return bool(
-            _invoke_native(
-                self._robot.set_robot_state,
+            self._robot.set_robot_state(
                 joints,
                 gripper_value,
                 float(speed),
@@ -329,11 +360,7 @@ class SynriaRobotAPI:
         result["motion_converged"] = bool(converged)
         return result
 
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self._robot, name)
-
-
-class Arm:
+class RawArm:
     """Low-level ARX-M-CAN arm access (scan, zero, raw state)."""
 
     def __init__(
@@ -352,10 +379,6 @@ class Arm:
         if config_path is not None:
             kwargs["config_path"] = str(config_path)
         self._arm = _native.Arm(**kwargs)
-
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self._arm, name)
-
 
 def scan_ids(
     *,
@@ -420,7 +443,7 @@ class Teleoperation:
             raise ValueError("shape_min_s must be > 0 and <= shape_max_s")
         if stale_hold_s <= shape_max_s:
             raise ValueError("stale_hold_s must be greater than shape_max_s")
-        native = getattr(follower, "_robot", follower)
+        native = follower._robot if isinstance(follower, Robot) else follower
         self._on_state = on_state
         self._teleop_frequency_hz = frequency_hz
         self._leader: Any = None
@@ -500,22 +523,14 @@ class Teleoperation:
         self.stop()
         self._teleop.disconnect_follower()
 
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self._teleop, name)
-
-
 class SparkVisBridge:
     """Bridge SparkVis joint_update WebSocket stream to an ARX-M-CAN robot."""
 
     def __init__(self, **kwargs: Any) -> None:
         self._bridge = _native.SparkVisBridge(**kwargs)
 
-    def connect_robot(self, robot: SynriaRobotAPI) -> None:
+    def connect_robot(self, robot: Robot) -> None:
         self._bridge.connect_robot(robot._robot)
-
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self._bridge, name)
-
 
 def create_robot(
     port: str = DEFAULT_PORT,
@@ -534,10 +549,10 @@ def create_robot(
     urdf_path: str | Path | None = None,
     base_link: str | None = None,
     end_link: str | None = None,
-) -> SynriaRobotAPI:
+) -> Robot:
     """Factory — ``robot`` selects ``px6d`` / ``arx`` / ``follower`` (default ``px6d``)."""
     profile = get_profile(robot or DEFAULT_PROFILE)
-    return SynriaRobotAPI(
+    return Robot(
         port=port or DEFAULT_PORT,
         baud=baud,
         control_hz=control_hz,

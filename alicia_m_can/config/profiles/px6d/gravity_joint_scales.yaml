@@ -16,5 +16,5 @@ joint_scales:
 
 notes: >
   Edit joint_scales in this file per profile.
-  Re-export JSON after URDF edits: python scripts/export_dynamics_model.py --robot px6d
+  Re-export JSON after URDF edits: python examples/12_gravity_calibrate.py --robot px6d export-model
   Float test uses alicia_m_can_dm_float.yaml (kp=0, kd=1).

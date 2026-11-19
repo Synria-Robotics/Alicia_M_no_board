@@ -19,7 +19,7 @@ from __future__ import annotations
 import argparse
 
 from common import add_robot_arguments, make_robot
-from api.synria_robot_api import SparkVisBridge
+from api.robot import SparkVisBridge
 
 
 def main(args: argparse.Namespace) -> int:

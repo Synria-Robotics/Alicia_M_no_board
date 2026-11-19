@@ -19,11 +19,12 @@ def _fmt_gripper(value: float | None) -> str:
 def main(args: argparse.Namespace) -> None:
     robot = make_robot(args)
     try:
-        robot.set_robot_state(gripper_value=1000.0, gripper_speed=args.speed, wait_for_completion=True)
+        robot.gripper.open()
         time.sleep(0.5)
-        print(f"open  gripper={_fmt_gripper(robot.get_gripper_value())}")
-        robot.set_robot_state(gripper_value=0.0, gripper_speed=args.speed, wait_for_completion=True)
-        print(f"closed gripper={_fmt_gripper(robot.get_gripper_value())}")
+        print(f"open  gripper={_fmt_gripper(robot.gripper.value)}")
+        result = robot.gripper.close()
+        print(f"grasp={result}")
+        print(f"closed gripper={_fmt_gripper(robot.gripper.value)}")
     finally:
         robot.disconnect()
 

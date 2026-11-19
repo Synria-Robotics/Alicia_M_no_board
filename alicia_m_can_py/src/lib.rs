@@ -39,6 +39,17 @@ fn state_to_py(py: Python<'_>, state: &ArxMCanState) -> PyResult<PyObject> {
     Ok(dict.into())
 }
 
+fn grasp_to_py(py: Python<'_>, result: &alicia_m_can::GraspResult) -> PyResult<PyObject> {
+    let out = PyDict::new(py);
+    out.set_item("success", result.success)?;
+    out.set_item("contact_position", result.contact_position)?;
+    out.set_item("contact_torque_nm", result.contact_torque_nm)?;
+    out.set_item("hold_torque_nm", result.hold_torque_nm)?;
+    out.set_item("peak_temperature_c", result.peak_temperature_c)?;
+    out.set_item("reason", result.reason.clone())?;
+    Ok(out.into())
+}
+
 fn leader_field<'py, T: FromPyObject<'py>>(state: &Bound<'py, PyAny>, name: &str) -> PyResult<T> {
     if let Ok(dict) = state.downcast::<PyDict>() {
         if let Some(value) = dict.get_item(name)? {
@@ -210,6 +221,23 @@ impl PyRobot {
         self.inner_ref()?
             .get_gripper_value(request_feedback)
             .map_err(map_err)
+    }
+
+    fn gripper_close(&mut self, py: Python<'_>) -> PyResult<PyObject> {
+        let result = self.inner_mut()?.close_gripper().map_err(map_err)?;
+        grasp_to_py(py, &result)
+    }
+
+    fn gripper_open(&mut self, target: f64) -> PyResult<()> {
+        self.inner_mut()?.open_gripper(target).map_err(map_err)
+    }
+
+    fn gripper_hold(&mut self) -> PyResult<()> {
+        self.inner_mut()?.hold_gripper().map_err(map_err)
+    }
+
+    fn gripper_release(&mut self) -> PyResult<()> {
+        self.inner_mut()?.release_gripper().map_err(map_err)
     }
 
     #[pyo3(signature = (request_feedback=true))]

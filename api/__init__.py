@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
-import importlib
-from typing import Any
-
 from . import kinematics
+from .robot import (
+    Robot, RawArm, create_robot, DEFAULT_BAUD, DEFAULT_GRIPPER_SPEED,
+    DEFAULT_JOINT_SPEED, DEFAULT_PORT, HOME_JOINTS, NUM_ARM_JOINTS,
+    SparkVisBridge, Teleoperation, scan_ids,
+)
 from .profiles import (
     DEFAULT_PROFILE,
     PROFILE_NAMES,
@@ -20,7 +22,8 @@ DEFAULT_BASE_LINK = kinematics.DEFAULT_BASE_LINK
 DEFAULT_END_LINK = kinematics.DEFAULT_END_LINK
 
 __all__ = [
-    "Arm",
+    "Robot",
+    "Teleoperation",
     "DEFAULT_BASE_LINK",
     "DEFAULT_BAUD",
     "DEFAULT_END_LINK",
@@ -34,9 +37,8 @@ __all__ = [
     "PROFILE_NAMES",
     "RobotProfile",
     "SparkVisBridge",
-    "SynriaRobotAPI",
-    "Teleoperation",
-    "create_robot",
+    "Gripper",
+    "Diagnostics",
     "get_profile",
     "get_robot",
     "kinematics",
@@ -44,12 +46,5 @@ __all__ = [
     "scan_ids",
 ]
 
-
-def __getattr__(name: str) -> Any:
-    module = importlib.import_module(".synria_robot_api", __name__)
-    try:
-        value = getattr(module, name)
-    except AttributeError:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from None
-    globals()[name] = value
-    return value
+from .diagnostics import Diagnostics
+from .gripper import Gripper

@@ -82,7 +82,7 @@ def resolve_robot_setup(args: Namespace, *, prefer_float: bool = False) -> Robot
 
 
 def make_robot(args: Namespace, *, prefer_float: bool = False, **extra: object):
-    from api.synria_robot_api import create_robot
+    from api.robot import create_robot
 
     setup = resolve_robot_setup(args, prefer_float=prefer_float)
     return create_robot(
@@ -100,7 +100,7 @@ def make_robot(args: Namespace, *, prefer_float: bool = False, **extra: object):
 
 
 def make_arm(args: Namespace | None = None, *, enable_gripper: bool = False):
-    from api.synria_robot_api import Arm
+    from api.robot import RawArm as Arm
 
     setup = resolve_robot_setup(args) if args is not None else None
     return Arm(

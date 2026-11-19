@@ -15,5 +15,5 @@ joint_scales:
   - 1.0000  # joint6 / link6 (+ merged link7/8/tool0, +99.8g camera)
 
 notes: >
-  Re-export JSON after URDF edits: python scripts/export_dynamics_model.py --robot arx_cam
+  Re-export JSON after URDF edits: python examples/12_gravity_calibrate.py --robot arx_cam export-model
   Float test: alicia_m_can_dm_float.yaml (kp=0, kd=0.15).

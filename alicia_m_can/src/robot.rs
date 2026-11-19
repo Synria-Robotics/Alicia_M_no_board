@@ -7,6 +7,7 @@ use crate::config::default_config;
 use crate::control_loop::{compute_gravity_ff, CommandRefreshLoop};
 use crate::dynamics::{GravityCompConfig, GravityCompensator};
 use crate::error::{ArxError, Result};
+use crate::gripper::{GraspResult, GripperController};
 use crate::hardware::ArxMCanArm;
 use crate::trajectory::convergence::{max_abs_joint_delta, StallWatch};
 use crate::trajectory::governor::{ReferenceGovernor, DEFAULT_TORQUE_MARGIN};
@@ -112,6 +113,7 @@ pub struct ArxMCanRobot {
     mit_mode: bool,
     commanded_joints: Vec<f64>,
     command_vlim: f64,
+    gripper: GripperController,
 }
 
 impl ArxMCanRobot {
@@ -179,6 +181,7 @@ impl ArxMCanRobot {
             mit_mode,
             commanded_joints: q0.clone(),
             command_vlim: 0.0,
+            gripper: GripperController::default(),
         };
 
         if preserve_enable_state || auto_enable {
@@ -266,6 +269,106 @@ impl ArxMCanRobot {
         lock_arm(&self.arm)?.get_gripper_value(request_feedback)
     }
 
+    /// Guarded close: move until contact, then retain the contact reference.
+    pub fn close_gripper(&mut self) -> Result<GraspResult> {
+        self.gripper.validate()?;
+        let started = Instant::now();
+        let mut peak_temperature = f64::NAN;
+        self.set_gripper_mit(0.0, -0.2, self.gripper.kp_close, self.gripper.kd_close, 0.0)?;
+        while started.elapsed() < Duration::from_secs(10) {
+            thread::sleep(Duration::from_millis(100));
+            let diagnostics = self.get_motor_diagnostics(true)?;
+            let temperature = GripperController::temperature(&diagnostics);
+            peak_temperature = peak_temperature.max(temperature);
+            if temperature.is_finite() && temperature >= self.gripper.thermal_limit_c {
+                return Ok(GraspResult {
+                    success: false,
+                    contact_position: 0.0,
+                    contact_torque_nm: 0.0,
+                    hold_torque_nm: 0.0,
+                    peak_temperature_c: peak_temperature,
+                    reason: Some("thermal limit".into()),
+                });
+            }
+            let Some(diagnostic) = GripperController::gripper_diagnostic(&diagnostics) else {
+                continue;
+            };
+            let position = self
+                .get_gripper_value(true)?
+                .ok_or_else(|| ArxError::Runtime("gripper feedback unavailable".into()))?;
+            let torque = diagnostic.torque.abs();
+            if position > 20.0 && torque >= self.gripper.contact_torque_nm {
+                self.gripper.contact_position = Some(position);
+                self.hold_gripper()?;
+                return Ok(GraspResult {
+                    success: true,
+                    contact_position: position,
+                    contact_torque_nm: torque,
+                    hold_torque_nm: self.gripper.hold_torque_nm,
+                    peak_temperature_c: peak_temperature,
+                    reason: None,
+                });
+            }
+        }
+        Ok(GraspResult {
+            success: false,
+            contact_position: 0.0,
+            contact_torque_nm: 0.0,
+            hold_torque_nm: self.gripper.hold_torque_nm,
+            peak_temperature_c: peak_temperature,
+            reason: Some("no torque contact".into()),
+        })
+    }
+
+    pub fn hold_gripper(&mut self) -> Result<()> {
+        let position = self
+            .gripper
+            .contact_position
+            .unwrap_or_else(|| self.get_gripper_value(true).ok().flatten().unwrap_or(0.0));
+        let diagnostics = self.get_motor_diagnostics(true)?;
+        let temperature = GripperController::temperature(&diagnostics);
+        if temperature.is_finite() && temperature >= self.gripper.thermal_limit_c {
+            return Err(ArxError::Runtime("gripper thermal limit reached".into()));
+        }
+        let torque = GripperController::gripper_diagnostic(&diagnostics)
+            .map_or(0.0, |diagnostic| diagnostic.torque.abs());
+        let margin = (60.0 + 10.0 * (self.gripper.hold_torque_nm - torque)).clamp(0.0, 300.0);
+        let target = (position - margin).max(0.0);
+        self.set_gripper_mit(
+            target,
+            0.0,
+            self.gripper.kp_hold,
+            self.gripper.kd_hold,
+            self.gripper.hold_torque_nm,
+        )
+    }
+
+    pub fn open_gripper(&mut self, target: f64) -> Result<()> {
+        self.set_gripper_mit(
+            target.clamp(0.0, 1000.0),
+            0.0,
+            self.gripper.kp_hold,
+            self.gripper.kd_hold,
+            0.0,
+        )
+    }
+
+    pub fn release_gripper(&mut self) -> Result<()> {
+        self.gripper.contact_position = None;
+        self.open_gripper(1000.0)
+    }
+
+    fn set_gripper_mit(
+        &mut self,
+        value: f64,
+        velocity: f64,
+        kp: f64,
+        kd: f64,
+        tau_ff: f64,
+    ) -> Result<()> {
+        lock_arm(&self.arm)?.set_gripper_mit(value, velocity, kp, kd, tau_ff, self.enabled)
+    }
+
     pub fn get_motor_diagnostics(&self, request_feedback: bool) -> Result<Vec<MotorDiagnostic>> {
         lock_arm(&self.arm)?.motor_diagnostics(request_feedback)
     }
@@ -308,15 +411,15 @@ impl ArxMCanRobot {
         target_joints: Option<&[f64]>,
         gripper_value: Option<f64>,
         speed: f64,
-        gripper_speed: f64,
+        _gripper_speed: f64,
         wait_for_completion: bool,
         joint_tolerance: Option<f64>,
         converge_timeout: Option<f64>,
         max_joint_accel_rad_s2: Option<f64>,
         max_joint_jerk_rad_s3: Option<f64>,
         stream: bool,
-        gripper_tolerance: Option<f64>,
-        gripper_timeout_sec: Option<f64>,
+        _gripper_tolerance: Option<f64>,
+        _gripper_timeout_sec: Option<f64>,
     ) -> Result<bool> {
         let mut joints_converged = true;
         if let Some(joints) = target_joints {
@@ -337,15 +440,11 @@ impl ArxMCanRobot {
         }
         let mut gripper_ok = true;
         if let Some(value) = gripper_value {
-            gripper_ok = lock_arm(&self.arm)?.set_gripper(
-                validate_gripper_value(value),
-                gripper_speed,
-                Some(self.control_hz),
-                true,
-                wait_for_completion,
-                gripper_tolerance.unwrap_or(DEFAULT_GRIPPER_WAIT_TOLERANCE),
-                gripper_timeout_sec.unwrap_or(DEFAULT_GRIPPER_WAIT_TIMEOUT_SEC),
-            )?;
+            if validate_gripper_value(value) <= 0.0 {
+                gripper_ok = self.close_gripper()?.success;
+            } else {
+                self.open_gripper(validate_gripper_value(value))?;
+            }
         }
         Ok(joints_converged && (gripper_ok || !wait_for_completion))
     }
