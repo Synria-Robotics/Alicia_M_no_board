@@ -13,10 +13,13 @@ class Diagnostics:
     def read(self) -> list[dict[str, Any]]:
         return [dict(item) for item in self._native.get_motor_diagnostics(True)]
 
-    def thermal(self, *, max_temperature_c: float = 70.0) -> dict[str, Any]:
+    def thermal(
+        self, *, max_temperature_c: float = 70.0, motor_id: int | None = None
+    ) -> dict[str, Any]:
         motors = self.read()
+        monitored = [m for m in motors if motor_id is None or m.get("motor_id") == motor_id]
         hottest = max(
-            motors,
+            monitored,
             key=lambda m: max(float(m.get("mos_temperature_c", "nan")),
                               float(m.get("rotor_temperature_c", "nan"))),
             default=None,

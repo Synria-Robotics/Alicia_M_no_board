@@ -195,10 +195,21 @@ class Robot:
         torque_loss_samples = 0
         try:
             while time.monotonic() < deadline:
-                self.gripper.hold()
+                try:
+                    self.gripper.hold()
+                except RuntimeError as exc:
+                    return {
+                        "ok": False,
+                        "stage": "hold",
+                        "reason": str(exc),
+                        "motion_warning": motion_warning,
+                        "samples": samples,
+                    }
                 motors = self.diagnostics.read()
                 g = next((m for m in motors if m.get("motor_id") == 7), None)
-                thermal = self.diagnostics.thermal(max_temperature_c=max_temperature_c)
+                thermal = self.diagnostics.thermal(
+                    max_temperature_c=max_temperature_c, motor_id=7
+                )
                 torque = abs(float(g.get("torque", 0.0))) if g else 0.0
                 samples.append({"elapsed": hold_duration_sec - max(0, deadline - time.monotonic()),
                                 "torque_nm": torque, "temperature_c": thermal.get("hottest", {}).get("mos_temperature_c")})

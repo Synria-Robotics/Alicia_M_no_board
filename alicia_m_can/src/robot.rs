@@ -279,6 +279,7 @@ impl ArxMCanRobot {
         let started = Instant::now();
         let mut peak_temperature = f64::NAN;
         self.set_gripper_mit(0.0, -0.2, self.gripper.kp_close, self.gripper.kd_close, 0.0)?;
+        let mut contact_samples = 0_u8;
         while started.elapsed() < Duration::from_secs(10) {
             thread::sleep(Duration::from_millis(100));
             let diagnostics = self.get_motor_diagnostics(true)?;
@@ -302,7 +303,12 @@ impl ArxMCanRobot {
                 .ok_or_else(|| ArxError::Runtime("gripper feedback unavailable".into()))?;
             let torque = diagnostic.torque.abs();
             if position > 20.0 && torque >= self.gripper.contact_torque_nm {
-                self.gripper.contact_position = Some(position);
+                contact_samples += 1;
+            } else {
+                contact_samples = 0;
+            }
+            if contact_samples >= 2 {
+                self.gripper.begin_hold(position);
                 self.hold_gripper()?;
                 return Ok(GraspResult {
                     success: true,
@@ -336,15 +342,12 @@ impl ArxMCanRobot {
         }
         let torque = GripperController::gripper_diagnostic(&diagnostics)
             .map_or(0.0, |diagnostic| diagnostic.torque.abs());
-        let margin = (60.0 + 10.0 * (self.gripper.hold_torque_nm - torque)).clamp(0.0, 300.0);
-        let target = (position - margin).max(0.0);
-        self.set_gripper_mit(
-            target,
-            0.0,
-            self.gripper.kp_hold,
-            self.gripper.kd_hold,
-            self.gripper.hold_torque_nm,
-        )
+        let target = if self.gripper.contact_position.is_some() {
+            self.gripper.hold_target(torque)
+        } else {
+            position
+        };
+        self.set_gripper_mit(target, 0.0, self.gripper.kp_hold, self.gripper.kd_hold, 0.0)
     }
 
     pub fn open_gripper(&mut self, target: f64) -> Result<()> {
@@ -358,7 +361,7 @@ impl ArxMCanRobot {
     }
 
     pub fn release_gripper(&mut self) -> Result<()> {
-        self.gripper.contact_position = None;
+        self.gripper.clear_hold();
         self.open_gripper(1000.0)
     }
 
