@@ -233,16 +233,8 @@ pub fn default_config(
         .map(|joint| (joint.name.clone(), joint))
         .collect();
 
-    let arm_names = data
-        .groups
-        .get("arm")
-        .cloned()
-        .unwrap_or_default();
-    let gripper_names = data
-        .groups
-        .get("gripper")
-        .cloned()
-        .unwrap_or_default();
+    let arm_names = data.groups.get("arm").cloned().unwrap_or_default();
+    let gripper_names = data.groups.get("gripper").cloned().unwrap_or_default();
 
     let arm_joints: Result<Vec<JointMotorConfig>> = arm_names
         .iter()
@@ -259,10 +251,7 @@ pub fn default_config(
         .and_then(|name| joints_by_name.get(name))
         .map(joint_from_yaml);
 
-    let mode = data
-        .arm_control_mode
-        .as_deref()
-        .unwrap_or(arm_control_mode);
+    let mode = data.arm_control_mode.as_deref().unwrap_or(arm_control_mode);
 
     Ok(ArxMCanConfig {
         port: port

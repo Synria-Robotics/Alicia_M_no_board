@@ -22,7 +22,9 @@ impl JointTrajectoryPlanner {
     ) -> Result<Self> {
         let dof = q_start.len().min(q_goal.len());
         if dof == 0 {
-            return Err(ArxError::InvalidArgument("trajectory requires joints".into()));
+            return Err(ArxError::InvalidArgument(
+                "trajectory requires joints".into(),
+            ));
         }
         let dt = 1.0 / control_hz.max(1.0);
         let mut input = InputParameter::new(dof);
@@ -53,12 +55,7 @@ impl JointTrajectoryPlanner {
     }
 
     /// Keep current `q/dq/ddq` and replan toward a new goal (online teleop).
-    pub fn retarget(
-        &mut self,
-        q_goal: &[f64],
-        dq_goal: Option<&[f64]>,
-        limits: &TrajectoryLimits,
-    ) {
+    pub fn retarget(&mut self, q_goal: &[f64], dq_goal: Option<&[f64]>, limits: &TrajectoryLimits) {
         self.apply_limits(limits);
         let n = self.dof.min(q_goal.len());
         for i in 0..n {
@@ -74,9 +71,14 @@ impl JointTrajectoryPlanner {
 
     fn apply_limits(&mut self, limits: &TrajectoryLimits) {
         for i in 0..self.dof {
-            self.input.max_velocity[i] = limits.max_velocity.get(i).copied().unwrap_or(0.0).max(1e-6);
-            self.input.max_acceleration[i] =
-                limits.max_acceleration.get(i).copied().unwrap_or(0.0).max(1e-6);
+            self.input.max_velocity[i] =
+                limits.max_velocity.get(i).copied().unwrap_or(0.0).max(1e-6);
+            self.input.max_acceleration[i] = limits
+                .max_acceleration
+                .get(i)
+                .copied()
+                .unwrap_or(0.0)
+                .max(1e-6);
             self.input.max_jerk[i] = limits.max_jerk.get(i).copied().unwrap_or(0.0).max(1e-6);
         }
     }
@@ -129,8 +131,7 @@ mod tests {
         };
         let start = vec![0.0; 6];
         let goal = vec![0.5; 6];
-        let mut planner =
-            JointTrajectoryPlanner::new(&start, &goal, &[], &limits, 500.0).unwrap();
+        let mut planner = JointTrajectoryPlanner::new(&start, &goal, &[], &limits, 500.0).unwrap();
         let mut last_q = start;
         for _ in 0..5000 {
             let (q, dq, done) = planner.step().unwrap();
@@ -186,8 +187,7 @@ mod tests {
         };
         let start = vec![0.0; 6];
         let goal = vec![0.80, 0.16, 0.0, 0.0, 0.40, 0.0];
-        let mut planner =
-            JointTrajectoryPlanner::new(&start, &goal, &[], &limits, 500.0).unwrap();
+        let mut planner = JointTrajectoryPlanner::new(&start, &goal, &[], &limits, 500.0).unwrap();
         let mut samples = 0;
         for _ in 0..5000 {
             let (q, _, done) = planner.step().unwrap();

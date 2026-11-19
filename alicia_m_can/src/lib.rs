@@ -30,7 +30,8 @@ pub use sparkvis::{SparkVisBridge, SparkVisConfig};
 pub use teleop::mapping::alicia_d_rad_to_alicia_m_rad;
 pub use teleop::{LeaderSample, TeleopConfig, TeleopSession};
 pub use trajectory::{
-    TrajectoryLimits, DEFAULT_MAX_JOINT_ACCEL_RAD_S2, DEFAULT_MAX_JOINT_JERK_RAD_S3,
+    motion_limits_from_vlim, MotionLimits, TrajectoryLimits, DEFAULT_MAX_JOINT_ACCEL_RAD_S2,
+    DEFAULT_MAX_JOINT_JERK_RAD_S3,
 };
 pub use types::{ArxMCanState, JointState, MotorDiagnostic, MotorState, VlimInput};
 
