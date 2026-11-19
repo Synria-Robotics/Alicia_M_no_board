@@ -1,12 +1,12 @@
 use crate::config::JointMotorConfig;
 
-pub const DEFAULT_MAX_JOINT_ACCEL_RAD_S2: f64 = 8.0;
-pub const DEFAULT_MAX_JOINT_JERK_RAD_S3: f64 = 50.0;
+pub const DEFAULT_MAX_JOINT_ACCEL_RAD_S2: f64 = 4.0;
+pub const DEFAULT_MAX_JOINT_JERK_RAD_S3: f64 = 20.0;
 
-const ACCEL_TIME_S: f64 = 0.20;
-const JERK_TIME_S: f64 = 0.05;
-const MIN_ACCEL_RAD_S2: f64 = 0.20;
-const MIN_JERK_RAD_S3: f64 = 4.0;
+const ACCEL_TIME_S: f64 = 0.45;
+const JERK_TIME_S: f64 = 0.15;
+const MIN_ACCEL_RAD_S2: f64 = 0.10;
+const MIN_JERK_RAD_S3: f64 = 1.0;
 
 /// One continuous speed-to-limits mapping shared by P2P and stream control.
 #[derive(Debug, Clone, Copy, PartialEq)]

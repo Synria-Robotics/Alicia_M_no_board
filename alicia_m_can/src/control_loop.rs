@@ -153,7 +153,7 @@ impl CommandRefreshLoop {
                 let mut q_meas_cache = q_des.clone();
                 let mut tau_ff_cache: Option<Vec<f64>> = None;
                 let mut last_feedback_at = std::time::Instant::now();
-                let feedback_period = Duration::from_millis(10);
+                let feedback_period = Duration::from_millis(20);
                 let mut next_tick = std::time::Instant::now() + period;
 
                 while !*loop_stop.lock().unwrap() {
@@ -532,7 +532,7 @@ fn spawn_feedback_loop(
     thread::Builder::new()
         .name("alicia-m-can-feedback".into())
         .spawn(move || {
-            let period = Duration::from_millis(10);
+            let period = Duration::from_millis(20);
             let mut next = std::time::Instant::now();
             while !*stop.lock().unwrap() {
                 if let Ok(guard) = arm.lock() {

@@ -20,7 +20,7 @@ pub const NUM_ARM_JOINTS: usize = 6;
 pub const DEFAULT_PORT: &str = "/dev/ttyACM0";
 pub const DEFAULT_BAUD: u32 = 1_000_000;
 pub const DEFAULT_CONTROL_HZ: f64 = 100.0;
-pub const DEFAULT_MIT_CONTROL_HZ: f64 = 500.0;
+pub const DEFAULT_MIT_CONTROL_HZ: f64 = 400.0;
 pub const DEFAULT_ARM_CONTROL_MODE: &str = "mit";
 pub const DEFAULT_MAX_JOINT_VEL_RAD_S: f64 = 3.0;
 pub const DEFAULT_JOINT_SPEED: f64 = 400.0;
@@ -56,9 +56,9 @@ fn lock_arm(arm: &Arc<Mutex<ArxMCanArm>>) -> Result<std::sync::MutexGuard<'_, Ar
 /// Wait without retaining the arm mutex between polls.
 ///
 /// The MIT refresh thread needs this same mutex on every control tick.
-/// A joint error that stays at least 0.05 rad while the arm is slower than
-/// 0.08 rad/s for 0.3 s returns false immediately. The timeout still covers
-/// a move that is traveling.
+/// Wait for both position and velocity to settle. Position alone can enter the
+/// tolerance while the arm is still moving, which makes the next target start
+/// with residual momentum.
 fn wait_until_at_target(
     arm: &Arc<Mutex<ArxMCanArm>>,
     target: &[f64],
@@ -70,26 +70,37 @@ fn wait_until_at_target(
     let pause = Duration::from_secs_f64(poll_interval.max(0.001));
     let mut stall = StallWatch::arm_blocked();
     let mut prev: Option<(Vec<f64>, Instant)> = None;
+    let mut settled_since: Option<Instant> = None;
     while Instant::now() < deadline {
         let now = Instant::now();
         let measured = {
             let guard = lock_arm(arm)?;
             let state = guard.read_state(false)?;
-            if state.arm.positions.len() < target.len() {
+            if state.arm.positions.len() < target.len() || state.arm.velocities.len() < target.len()
+            {
                 None
             } else {
-                Some(state.arm.positions[..target.len()].to_vec())
+                Some((
+                    state.arm.positions[..target.len()].to_vec(),
+                    state.arm.velocities[..target.len()].to_vec(),
+                ))
             }
         };
-        if let Some(q) = measured {
+        if let Some((q, velocities)) = measured {
             let err = max_abs_joint_delta(&q, target);
-            if err <= tolerance {
-                return Ok(true);
+            let speed = velocities.iter().map(|v| v.abs()).fold(0.0, f64::max);
+            if err <= tolerance && speed <= 0.02 {
+                let start = settled_since.get_or_insert(now);
+                if now.duration_since(*start).as_secs_f64() >= 0.05 {
+                    return Ok(true);
+                }
+            } else {
+                settled_since = None;
             }
             if let Some((prev_q, prev_t)) = prev.as_ref() {
                 let dt = now.saturating_duration_since(*prev_t).as_secs_f64();
-                let vel = max_abs_joint_delta(&q, prev_q) / dt.max(1e-3);
-                if stall.observe(err, vel, now) {
+                let measured_speed = max_abs_joint_delta(&q, prev_q) / dt.max(1e-3);
+                if stall.observe(err, measured_speed, now) {
                     return Ok(false);
                 }
             }
