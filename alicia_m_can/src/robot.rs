@@ -525,7 +525,12 @@ impl ArxMCanRobot {
             .copied()
             .collect();
 
-        if !needs_trajectory(&q_meas, target, tolerance) {
+        // Position tolerance alone is not enough to safely snap to the goal:
+        // at high speed the encoder can enter the tolerance band while the
+        // joint still has momentum. Keep the Ruckig deceleration profile
+        // active until both position and velocity have settled.
+        let max_measured_velocity = dq_meas.iter().map(|v| v.abs()).fold(0.0_f64, f64::max);
+        if !needs_trajectory(&q_meas, target, tolerance) && max_measured_velocity <= 0.02 {
             self.send_joints_direct(target, vlim)?;
             return Ok(true);
         }

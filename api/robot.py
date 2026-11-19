@@ -338,6 +338,8 @@ class Robot:
         wait_for_completion: bool = True,
         joint_tolerance: float | None = None,
         converge_timeout: float | None = None,
+        max_joint_accel_rad_s2: float | None = None,
+        max_joint_jerk_rad_s3: float | None = None,
         **ik_kwargs: Any,
     ) -> dict[str, Any]:
         """Solve IK (RoboCore) and optionally move the arm (MIT trajectory)."""
@@ -375,6 +377,8 @@ class Robot:
                 stream=not wait_for_completion,
                 joint_tolerance=joint_tolerance,
                 converge_timeout=converge_timeout,
+                max_joint_accel_rad_s2=max_joint_accel_rad_s2,
+                max_joint_jerk_rad_s3=max_joint_jerk_rad_s3,
             )
         result["motion_executed"] = bool(executed)
         result["motion_converged"] = bool(converged)
