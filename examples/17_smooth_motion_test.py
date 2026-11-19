@@ -50,7 +50,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     add_robot_arguments(parser)
     parser.add_argument("--execute", action="store_true", help="enable motion")
-    parser.add_argument("--offset", type=float, default=0.15, help="joint 1 excursion [rad]")
+    parser.add_argument("--offset", type=float, default=0.15, help="multi-joint excursion scale [rad]")
+    parser.add_argument("--lift-height", type=float, default=0.10, help="Cartesian lift [m]")
     parser.add_argument("--low-speed", type=float, default=20.0, help="low speed [0-400]")
     parser.add_argument("--high-speed", type=float, default=250.0, help="high speed [0-400]")
     parser.add_argument("--sample-hz", type=float, default=25.0)
@@ -60,23 +61,36 @@ def main() -> int:
     if not args.execute:
         print("dry run: low/high speed test; re-run with --execute to move the robot")
         return 0
-    if args.offset <= 0 or not 0 < args.sample_hz <= 100:
-        parser.error("offset must be positive and sample-hz must be in (0,100]")
+    if args.offset <= 0 or args.lift_height <= 0 or not 0 < args.sample_hz <= 100:
+        parser.error("offset/lift-height must be positive and sample-hz must be in (0,100]")
 
     robot = make_robot(args)
     rows: list[tuple[float, list[float]]] = []
     stop = threading.Event()
     worker = threading.Thread(target=monitor, args=(robot, rows, stop, 1.0 / args.sample_hz), daemon=True)
     q0 = robot.get_joint_positions()[:6]
-    targets = [list(q0), list(q0), list(q0)]
-    targets[0][0] += args.offset
-    targets[1][0] -= args.offset
+    base_pose = robot.get_pose(q0)
+    position = list(base_pose["position"])
+    quaternion = list(base_pose["quaternion_xyzw"])
+    lift_pose = [position[0], position[1], position[2] + args.lift_height, *quaternion]
     summaries: list[dict[str, object]] = []
     worker.start()
     try:
-        for name, speed, target in (("low", args.low_speed, targets[0]),
-                                    ("high", args.high_speed, targets[1]),
-                                    ("return", args.high_speed, targets[2])):
+        lift = robot.set_pose(
+            lift_pose, speed=args.low_speed, wait_for_completion=True,
+            pos_tol=0.005, ori_tol=0.08, max_iters=400,
+        )
+        if not lift.get("motion_executed") or not lift.get("motion_converged"):
+            print({"phase": "lift_10cm", "result": lift})
+            return 1
+        q_lift = robot.get_joint_positions()[:6]
+        pattern = [1.0, -0.7, 0.5, -0.4, 0.3, -0.2]
+        target_a = [q + args.offset * scale for q, scale in zip(q_lift, pattern)]
+        target_b = [q - args.offset * scale for q, scale in zip(q_lift, pattern)]
+        for name, speed, target in (("low_multi_joint", args.low_speed, target_a),
+                                    ("high_multi_joint", args.high_speed, target_b),
+                                    ("return_lifted", args.high_speed, q_lift),
+                                    ("lower_10cm", args.low_speed, q0)):
             before = robot._robot.get_control_loop_stats()
             started = time.perf_counter()
             converged = robot.move_joints(target, speed=speed, wait_for_completion=True,
@@ -102,7 +116,13 @@ def main() -> int:
             t0 = rows[0][0]
             writer.writerows([[t - t0, *q] for t, q in rows])
 
-    report = {"motion": summaries, "sample_metrics": metrics(rows), "csv": str(args.output)}
+    report = {
+        "motion": summaries,
+        "lift_height_m": args.lift_height,
+        "multi_joint_pattern": pattern,
+        "sample_metrics": metrics(rows),
+        "csv": str(args.output),
+    }
     print(report)
     failed = any(not item["converged"] or item["send_errors"] or item["overruns"] for item in summaries)
     return 1 if failed else 0

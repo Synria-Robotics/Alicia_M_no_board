@@ -20,7 +20,7 @@ pub const NUM_ARM_JOINTS: usize = 6;
 pub const DEFAULT_PORT: &str = "/dev/ttyACM0";
 pub const DEFAULT_BAUD: u32 = 1_000_000;
 pub const DEFAULT_CONTROL_HZ: f64 = 100.0;
-pub const DEFAULT_MIT_CONTROL_HZ: f64 = 250.0;
+pub const DEFAULT_MIT_CONTROL_HZ: f64 = 500.0;
 pub const DEFAULT_ARM_CONTROL_MODE: &str = "mit";
 pub const DEFAULT_MAX_JOINT_VEL_RAD_S: f64 = 3.0;
 pub const DEFAULT_JOINT_SPEED: f64 = 400.0;
@@ -139,11 +139,7 @@ impl ArxMCanRobot {
                 "gravity feedforward requires arm_control_mode='mit'".into(),
             ));
         }
-        let effective_hz = if gravity_cfg.enabled {
-            control_hz.max(DEFAULT_MIT_CONTROL_HZ)
-        } else {
-            control_hz
-        };
+        let effective_hz = control_hz.max(DEFAULT_MIT_CONTROL_HZ);
 
         let mut arm = ArxMCanArm::new(
             default_config(Some(port), Some(baud), effective_hz, mode, hw_yaml)?,
@@ -626,7 +622,17 @@ impl ArxMCanRobot {
 
     fn gravity_ff_for(&self, joints: &[f64]) -> Option<Vec<f64>> {
         let guard = lock_arm(&self.arm).ok()?;
-        compute_gravity_ff(&guard, self.gravity.as_ref(), joints)
+        let state = guard.read_state(false).ok()?;
+        let measured = if state.arm.positions.len() >= NUM_ARM_JOINTS {
+            &state.arm.positions
+        } else {
+            joints
+        };
+        compute_gravity_ff(
+            self.gravity.as_ref(),
+            measured,
+            state.gripper.map(|g| g.position),
+        )
     }
 
     /// Walk MIT `q_des` to `positions`. `speed` limits the first catch-up only.

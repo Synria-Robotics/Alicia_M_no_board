@@ -12,6 +12,8 @@ pub struct ReferenceGovernor {
     kp: Vec<f64>,
     tmax: Vec<f64>,
     torque_margin: f64,
+    alpha: f64,
+    initialized: bool,
 }
 
 impl ReferenceGovernor {
@@ -30,11 +32,16 @@ impl ReferenceGovernor {
             kp,
             tmax,
             torque_margin: margin,
+            alpha: 1.0,
+            initialized: false,
         }
     }
 
     #[allow(clippy::unused_self)]
-    pub fn reset(&mut self) {}
+    pub fn reset(&mut self) {
+        self.alpha = 1.0;
+        self.initialized = false;
+    }
 
     fn eps_max(&self, i: usize, tau_ff: Option<&[f64]>) -> f64 {
         let ff = tau_ff
@@ -58,12 +65,12 @@ impl ReferenceGovernor {
     /// of finishing short axes first (per-joint clamp looks like stairs on large P2P).
     /// `dq` is scaled by the same `α`.
     pub fn apply(
-        &self,
+        &mut self,
         q_ideal: &[f64],
         dq_ideal: &[f64],
         q_meas: &[f64],
         tau_ff: Option<&[f64]>,
-        _dt: f64,
+        dt: f64,
     ) -> (Vec<f64>, Vec<f64>) {
         let n = q_ideal.len();
         let mut alpha: f64 = 1.0;
@@ -75,7 +82,15 @@ impl ReferenceGovernor {
                 alpha = alpha.min(eps / err);
             }
         }
-        alpha = alpha.clamp(0.0, 1.0);
+        let target_alpha = alpha.clamp(0.0, 1.0);
+        if !self.initialized {
+            self.alpha = target_alpha;
+            self.initialized = true;
+        } else {
+            let max_alpha_step = 20.0 * dt.max(0.001);
+            self.alpha += (target_alpha - self.alpha).clamp(-max_alpha_step, max_alpha_step);
+        }
+        alpha = self.alpha;
 
         let mut q_send = vec![0.0; n];
         let mut dq_send = vec![0.0; n];
@@ -111,7 +126,7 @@ mod tests {
 
     #[test]
     fn eps_max_from_tmax_and_kp() {
-        let gov = ReferenceGovernor::from_joint_configs(&[test_joint("4340P", 120.0)], 0.8);
+        let mut gov = ReferenceGovernor::from_joint_configs(&[test_joint("4340P", 120.0)], 0.8);
         let q_meas = vec![0.0];
         let q_ideal = vec![1.0];
         let (q_send, _) = gov.apply(&q_ideal, &[0.0], &q_meas, None, 0.002);
@@ -121,7 +136,7 @@ mod tests {
 
     #[test]
     fn no_clamp_when_error_small() {
-        let gov = ReferenceGovernor::from_joint_configs(&[test_joint("4310", 36.0)], 0.8);
+        let mut gov = ReferenceGovernor::from_joint_configs(&[test_joint("4310", 36.0)], 0.8);
         let q_meas = vec![0.0];
         let q_ideal = vec![0.05];
         let (q_send, _) = gov.apply(&q_ideal, &[0.1], &q_meas, None, 0.002);
@@ -130,7 +145,7 @@ mod tests {
 
     #[test]
     fn dq_scales_with_alpha_when_q_limited() {
-        let gov = ReferenceGovernor::from_joint_configs(&[test_joint("4340P", 120.0)], 0.8);
+        let mut gov = ReferenceGovernor::from_joint_configs(&[test_joint("4340P", 120.0)], 0.8);
         let q_meas = vec![0.0];
         let q_ideal = vec![1.0];
         let (q_send, dq) = gov.apply(&q_ideal, &[0.3], &q_meas, None, 0.002);
@@ -141,7 +156,7 @@ mod tests {
 
     #[test]
     fn feedforward_reduces_tracking_budget() {
-        let gov = ReferenceGovernor::from_joint_configs(&[test_joint("4340P", 120.0)], 1.0);
+        let mut gov = ReferenceGovernor::from_joint_configs(&[test_joint("4340P", 120.0)], 1.0);
         let q_meas = vec![0.0];
         let q_ideal = vec![1.0];
         let (q_send, _) = gov.apply(&q_ideal, &[0.0], &q_meas, Some(&[7.0]), 0.002);
@@ -151,7 +166,7 @@ mod tests {
 
     #[test]
     fn saturating_joint_slows_the_whole_arm() {
-        let gov = ReferenceGovernor::from_joint_configs(
+        let mut gov = ReferenceGovernor::from_joint_configs(
             &[test_joint("4340P", 120.0), test_joint("4340P", 120.0)],
             0.8,
         );

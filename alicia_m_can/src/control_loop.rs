@@ -56,11 +56,18 @@ struct LoopState {
     missed_deadlines: u64,
 }
 
+#[derive(Clone, Default)]
+struct FeedbackSnapshot {
+    arm_positions: Vec<f64>,
+    gripper_position: Option<f64>,
+}
+
 pub struct CommandRefreshLoop {
     state: Arc<Mutex<LoopState>>,
     stop: Arc<Mutex<bool>>,
     gravity: Option<Arc<Mutex<GravityCompensator>>>,
     handle: Option<JoinHandle<()>>,
+    feedback_handle: Option<JoinHandle<()>>,
 }
 
 impl CommandRefreshLoop {
@@ -86,13 +93,27 @@ impl CommandRefreshLoop {
             missed_deadlines: 0,
         }));
         let stop = Arc::new(Mutex::new(false));
-        Self {
+        let feedback = Arc::new(Mutex::new(FeedbackSnapshot {
+            arm_positions: initial_joints.clone(),
+            gripper_position: None,
+        }));
+        let feedback_handle = spawn_feedback_loop(arm.clone(), stop.clone(), feedback.clone());
+        let loop_handle = Self {
             state,
             stop,
             gravity,
             handle: None,
-        }
-        .spawn(arm, hz, mit_mode, initial_joints, initial_vlim, governor)
+            feedback_handle: Some(feedback_handle),
+        };
+        loop_handle.spawn(
+            arm,
+            hz,
+            mit_mode,
+            initial_joints,
+            initial_vlim,
+            governor,
+            feedback,
+        )
     }
 
     fn spawn(
@@ -103,6 +124,7 @@ impl CommandRefreshLoop {
         initial_joints: Vec<f64>,
         initial_vlim: f64,
         mut governor: Option<ReferenceGovernor>,
+        feedback: Arc<Mutex<FeedbackSnapshot>>,
     ) -> Self {
         let loop_state = self.state.clone();
         let loop_stop = self.stop.clone();
@@ -310,12 +332,14 @@ impl CommandRefreshLoop {
                             let (joints, velocities, tau_ff) = if mit_mode {
                                 if let Some(gov) = governor.as_mut() {
                                     if last_feedback_at.elapsed() >= feedback_period {
-                                        let state = arm.read_state(false).map_err(|_| ())?;
-                                        q_meas_cache = state.arm.positions;
+                                        let snapshot = feedback.lock().unwrap().clone();
+                                        if snapshot.arm_positions.len() == q_meas_cache.len() {
+                                            q_meas_cache = snapshot.arm_positions;
+                                        }
                                         tau_ff_cache = compute_gravity_ff(
-                                            &arm,
                                             gravity.as_ref(),
                                             &q_meas_cache,
+                                            snapshot.gripper_position,
                                         );
                                         last_feedback_at = std::time::Instant::now();
                                     }
@@ -467,6 +491,9 @@ impl CommandRefreshLoop {
         if let Some(handle) = self.handle.take() {
             let _ = handle.join();
         }
+        if let Some(handle) = self.feedback_handle.take() {
+            let _ = handle.join();
+        }
     }
 }
 
@@ -486,17 +513,43 @@ fn pad_to_len(mut q: Vec<f64>, n: usize) -> Vec<f64> {
 }
 
 pub(crate) fn compute_gravity_ff(
-    arm: &ArxMCanArm,
     gravity: Option<&Arc<Mutex<GravityCompensator>>>,
-    target_joints: &[f64],
+    measured_joints: &[f64],
+    gripper_q: Option<f64>,
 ) -> Option<Vec<f64>> {
     let compensator = gravity?;
-    let state = arm.read_state(false).ok()?;
-    let measured = &state.arm.positions;
-    let gripper_q = state.gripper.as_ref().map(|g| g.position);
     let mut guard = compensator.lock().ok()?;
     guard
-        .compute_arm_gravity_ff(measured, gripper_q)
+        .compute_arm_gravity_ff(measured_joints, gripper_q)
         .ok()
-        .or_else(|| guard.compute_arm_gravity_ff(target_joints, gripper_q).ok())
+}
+
+fn spawn_feedback_loop(
+    arm: Arc<Mutex<ArxMCanArm>>,
+    stop: Arc<Mutex<bool>>,
+    snapshot: Arc<Mutex<FeedbackSnapshot>>,
+) -> JoinHandle<()> {
+    thread::Builder::new()
+        .name("alicia-m-can-feedback".into())
+        .spawn(move || {
+            let period = Duration::from_millis(10);
+            let mut next = std::time::Instant::now();
+            while !*stop.lock().unwrap() {
+                if let Ok(guard) = arm.lock() {
+                    if let Ok(state) = guard.read_state(false) {
+                        let mut out = snapshot.lock().unwrap();
+                        out.arm_positions = state.arm.positions;
+                        out.gripper_position = state.gripper.map(|g| g.position);
+                    }
+                }
+                next += period;
+                let now = std::time::Instant::now();
+                if now < next {
+                    thread::sleep(next - now);
+                } else {
+                    next = now;
+                }
+            }
+        })
+        .expect("spawn feedback thread")
 }
