@@ -60,7 +60,16 @@ pub fn step_joint_des(
     goal_age: f64,
 ) -> Vec<f64> {
     let amax = stream_amax_from_vlim(vlim);
-    step_joint_des_with_amax(q_des, q_goal, last_dq, v_stream, vlim, dt, goal_age, amax)
+    step_joint_des_with_amax(
+        q_des,
+        q_goal,
+        last_dq,
+        v_stream,
+        vlim,
+        dt,
+        goal_age,
+        amax,
+    )
 }
 
 fn scale_isotropic(v: &mut [f64], vlim: f64) {
@@ -157,7 +166,9 @@ fn step_joint_des_with_amax(
 
 #[cfg(test)]
 mod tests {
-    use super::{note_stream_goal, step_joint_des, step_joint_des_with_amax, STREAM_STALE_S};
+    use super::{
+        note_stream_goal, step_joint_des, step_joint_des_with_amax, STREAM_STALE_S,
+    };
     use crate::trajectory::limits::stream_amax_from_vlim;
 
     fn live(
@@ -318,7 +329,15 @@ mod tests {
         // A 40 ms gap used to exceed the 25 ms stale window and brake mid-motion.
         let mut q_des = vec![0.0];
         let mut last_dq = vec![0.5];
-        let dq = step_joint_des(&mut q_des, &[0.02], &mut last_dq, &[0.5], 1.5, 0.002, 0.04);
+        let dq = step_joint_des(
+            &mut q_des,
+            &[0.02],
+            &mut last_dq,
+            &[0.5],
+            1.5,
+            0.002,
+            0.04,
+        );
         assert!(
             dq[0] > 0.2,
             "leader reply gap must keep coasting, got dq={dq:?}"

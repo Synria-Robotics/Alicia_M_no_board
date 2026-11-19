@@ -5,9 +5,7 @@ use crate::utils::gripper::validate_gripper_value;
 pub const NUM_ARM_JOINTS: usize = 6;
 const FINGER_TRAVEL_M: f64 = 0.025;
 
-pub fn parse_joint_values(
-    joint_values: &HashMap<String, f64>,
-) -> (HashMap<usize, f64>, Option<f64>) {
+pub fn parse_joint_values(joint_values: &HashMap<String, f64>) -> (HashMap<usize, f64>, Option<f64>) {
     let mut joints = HashMap::new();
     let mut gripper = None;
     let mut left_finger = None;

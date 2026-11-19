@@ -197,11 +197,7 @@ fn command_loop(
                 if let Some(robot) = slot.as_mut() {
                     let _ = robot.set_robot_state(
                         Some(&q),
-                        if config.control_gripper {
-                            gripper
-                        } else {
-                            None
-                        },
+                        if config.control_gripper { gripper } else { None },
                         speed,
                         gripper_speed,
                         false,
@@ -265,22 +261,14 @@ fn parse_ws_url(ws_url: &str) -> Result<(String, u16, String)> {
         None => (rest, "/ws/teleop".to_string()),
     };
     if let Some((host, port)) = host_port.split_once(':') {
-        Ok((
-            host.to_string(),
-            port.parse()
-                .map_err(|_| ArxError::Runtime("bad port".into()))?,
-            path,
-        ))
+        Ok((host.to_string(), port.parse().map_err(|_| ArxError::Runtime("bad port".into()))?, path))
     } else {
         Ok((host_port.to_string(), 8000, path))
     }
 }
 
 fn publish_joint_state(http_base: &str, q: &[f64; NUM_ARM_JOINTS]) -> Result<()> {
-    let url = format!(
-        "{}/api/sparkvis/joint_state",
-        http_base.trim_end_matches('/')
-    );
+    let url = format!("{}/api/sparkvis/joint_state", http_base.trim_end_matches('/'));
     ureq::post(&url)
         .set("Content-Type", "application/json")
         .send_json(serde_json::json!({
@@ -305,9 +293,7 @@ fn ws_handshake(stream: &mut TcpStream, host: &str, port: u16, path: &str) -> Re
         .map_err(|e| ArxError::Runtime(e.to_string()))?;
     let resp = String::from_utf8_lossy(&buf[..n]);
     if !resp.contains("101") {
-        return Err(ArxError::Runtime(format!(
-            "websocket handshake failed: {resp}"
-        )));
+        return Err(ArxError::Runtime(format!("websocket handshake failed: {resp}")));
     }
     Ok(())
 }
@@ -346,16 +332,12 @@ fn read_ws_text_frame(stream: &mut TcpStream) -> Result<Option<String>> {
     let mut len = (header[1] & 0x7F) as usize;
     if len == 126 {
         let mut ext = [0u8; 2];
-        stream
-            .read_exact(&mut ext)
-            .map_err(|e| ArxError::Runtime(e.to_string()))?;
+        stream.read_exact(&mut ext).map_err(|e| ArxError::Runtime(e.to_string()))?;
         len = u16::from_be_bytes(ext) as usize;
     }
     if masked {
         let mut mask = [0u8; 4];
-        stream
-            .read_exact(&mut mask)
-            .map_err(|e| ArxError::Runtime(e.to_string()))?;
+        stream.read_exact(&mut mask).map_err(|e| ArxError::Runtime(e.to_string()))?;
     }
     let mut payload = vec![0u8; len];
     if len > 0 {

@@ -24,43 +24,47 @@ impl Default for ScanOptions {
 }
 
 pub fn scan_ids(port: &str, baud: u32, opts: &ScanOptions) -> Result<Vec<u16>> {
-    let output = Command::new(std::env::var("PYTHON").unwrap_or_else(|_| "python3".to_string()))
-        .args([
-            "-m",
-            "motorbridge.cli",
-            "scan",
-            "--vendor",
-            "damiao",
-            "--transport",
-            "dm-serial",
-            "--serial-port",
-            port,
-            "--serial-baud",
-            &baud.to_string(),
-            "--model",
-            &opts.model,
-            "--start-id",
-            &opts.start_id.to_string(),
-            "--end-id",
-            &opts.end_id.to_string(),
-            "--feedback-base",
-            &opts.feedback_base,
-            "--timeout-ms",
-            &opts.timeout_ms.to_string(),
-        ])
-        .output()
-        .map_err(|e| ArxError::Runtime(format!("motorbridge scan failed to start: {e}")))?;
+    let output = Command::new(
+        std::env::var("PYTHON").unwrap_or_else(|_| "python3".to_string()),
+    )
+    .args([
+        "-m",
+        "motorbridge.cli",
+        "scan",
+        "--vendor",
+        "damiao",
+        "--transport",
+        "dm-serial",
+        "--serial-port",
+        port,
+        "--serial-baud",
+        &baud.to_string(),
+        "--model",
+        &opts.model,
+        "--start-id",
+        &opts.start_id.to_string(),
+        "--end-id",
+        &opts.end_id.to_string(),
+        "--feedback-base",
+        &opts.feedback_base,
+        "--timeout-ms",
+        &opts.timeout_ms.to_string(),
+    ])
+    .output()
+    .map_err(|e| ArxError::Runtime(format!("motorbridge scan failed to start: {e}")))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let stdout = String::from_utf8_lossy(&output.stdout);
-        return Err(ArxError::Runtime(if !stderr.trim().is_empty() {
-            stderr.trim().to_string()
-        } else if !stdout.trim().is_empty() {
-            stdout.trim().to_string()
-        } else {
-            "motorbridge scan failed".to_string()
-        }));
+        return Err(ArxError::Runtime(
+            if !stderr.trim().is_empty() {
+                stderr.trim().to_string()
+            } else if !stdout.trim().is_empty() {
+                stdout.trim().to_string()
+            } else {
+                "motorbridge scan failed".to_string()
+            },
+        ));
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);

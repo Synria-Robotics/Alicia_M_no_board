@@ -40,13 +40,8 @@ fn request_feedback_for_missing(
     }
 }
 
-fn all_joints_have_feedback(
-    motor_map: &HashMap<String, Arc<DamiaoMotor>>,
-    joints: &[JointCfg],
-) -> bool {
-    joints
-        .iter()
-        .all(|joint| joint_has_feedback(motor_map, joint))
+fn all_joints_have_feedback(motor_map: &HashMap<String, Arc<DamiaoMotor>>, joints: &[JointCfg]) -> bool {
+    joints.iter().all(|joint| joint_has_feedback(motor_map, joint))
 }
 
 fn wait_for_joint_feedback(
@@ -72,10 +67,7 @@ fn read_joint_state_vectors(
     let mut vel = Vec::with_capacity(joints.len());
     let mut torq = Vec::with_capacity(joints.len());
     for joint in joints {
-        if let Some(state) = motor_map
-            .get(&joint.name)
-            .and_then(|motor| motor.latest_state())
-        {
+        if let Some(state) = motor_map.get(&joint.name).and_then(|motor| motor.latest_state()) {
             pos.push(f64::from(state.pos));
             vel.push(f64::from(state.vel));
             torq.push(f64::from(state.torq));
@@ -219,7 +211,10 @@ impl ArxMCan {
     }
 
     pub fn request_all_feedback(&self) -> Result<()> {
-        let controller = self.controller.as_ref().ok_or(ArxError::NotConnected)?;
+        let controller = self
+            .controller
+            .as_ref()
+            .ok_or(ArxError::NotConnected)?;
         for motor in self.motor_map.values() {
             let _ = motor.request_motor_feedback();
         }
@@ -260,7 +255,10 @@ impl ArxMCan {
         }
         thread::sleep(Duration::from_millis(300));
 
-        let controller = self.controller.as_ref().ok_or(ArxError::NotConnected)?;
+        let controller = self
+            .controller
+            .as_ref()
+            .ok_or(ArxError::NotConnected)?;
 
         for joint in &self.cfg.joints {
             for _ in 0..200 {
@@ -282,7 +280,10 @@ impl ArxMCan {
     }
 
     pub fn get_state(&self, request_feedback: bool) -> Result<(Vec<f64>, Vec<f64>, Vec<f64>)> {
-        let controller = self.controller.as_ref().ok_or(ArxError::NotConnected)?;
+        let controller = self
+            .controller
+            .as_ref()
+            .ok_or(ArxError::NotConnected)?;
 
         if request_feedback {
             for motor in self.motor_map.values() {
@@ -298,11 +299,13 @@ impl ArxMCan {
 
     /// Encoder position of one named joint in radians (gripper name is `gripper`).
     pub fn read_joint_position(&self, name: &str, request_feedback: bool) -> Result<Option<f64>> {
-        let motor = self
-            .motor_map
-            .get(name)
-            .ok_or_else(|| ArxError::Runtime(format!("joint {name} not on bus")))?;
-        let controller = self.controller.as_ref().ok_or(ArxError::NotConnected)?;
+        let motor = self.motor_map.get(name).ok_or_else(|| {
+            ArxError::Runtime(format!("joint {name} not on bus"))
+        })?;
+        let controller = self
+            .controller
+            .as_ref()
+            .ok_or(ArxError::NotConnected)?;
         if request_feedback {
             let _ = motor.request_motor_feedback();
             // A few RX polls so the 0x7FF reply can land without waiting on arm joints.
@@ -326,7 +329,10 @@ impl ArxMCan {
     }
 
     pub fn get_motor_diagnostics(&self, request_feedback: bool) -> Result<Vec<MotorDiagnostic>> {
-        let controller = self.controller.as_ref().ok_or(ArxError::NotConnected)?;
+        let controller = self
+            .controller
+            .as_ref()
+            .ok_or(ArxError::NotConnected)?;
         if request_feedback {
             for motor in self.motor_map.values() {
                 motor.request_motor_feedback()?;
@@ -354,7 +360,9 @@ impl ArxMCan {
                     velocity: state.as_ref().map_or(f64::NAN, |s| f64::from(s.vel)),
                     torque: state.as_ref().map_or(f64::NAN, |s| f64::from(s.torq)),
                     mos_temperature_c: state.as_ref().map_or(f64::NAN, |s| f64::from(s.t_mos)),
-                    rotor_temperature_c: state.as_ref().map_or(f64::NAN, |s| f64::from(s.t_rotor)),
+                    rotor_temperature_c: state
+                        .as_ref()
+                        .map_or(f64::NAN, |s| f64::from(s.t_rotor)),
                 }
             })
             .collect())
@@ -369,7 +377,10 @@ impl ArxMCan {
             Some(motor) => motor,
             None => return Ok(None),
         };
-        let controller = self.controller.as_ref().ok_or(ArxError::NotConnected)?;
+        let controller = self
+            .controller
+            .as_ref()
+            .ok_or(ArxError::NotConnected)?;
 
         let _ = motor.send_cmd_mit(0.0, 0.0, 0.0, 0.0, 0.0);
         thread::sleep(Duration::from_millis(2));
