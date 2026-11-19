@@ -245,6 +245,10 @@ impl ArxMCanRobot {
         Ok(())
     }
 
+    pub fn set_zero(&mut self) -> Result<()> {
+        lock_arm(&self.arm)?.set_zero()
+    }
+
     /// Read feedback and send once (arx_d_can_ref ``hold_current_position``).
     pub fn hold_current_position(&mut self) -> Result<Vec<f64>> {
         let joints = read_joint_feedback(&self.arm)?;

@@ -99,18 +99,6 @@ def make_robot(args: Namespace, *, prefer_float: bool = False, **extra: object):
     )
 
 
-def make_arm(args: Namespace | None = None, *, enable_gripper: bool = False):
-    from api.robot import RawArm as Arm
-
-    setup = resolve_robot_setup(args) if args is not None else None
-    return Arm(
-        port=DEFAULT_PORT if args is None else args.port,
-        baud=DEFAULT_BAUD if args is None else args.baud,
-        enable_gripper=enable_gripper,
-        config_path=None if setup is None else setup.config_path,
-    )
-
-
 def load_poses(path: Path = DEFAULT_POSES) -> list[list[float]]:
     data = yaml.safe_load(path.read_text(encoding="utf-8"))
     ref = data["ref"]

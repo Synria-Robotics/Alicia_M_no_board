@@ -10,20 +10,19 @@ import argparse
 import math
 import sys
 
-from common import add_robot_arguments, make_arm
+from common import add_robot_arguments, make_robot
 
 
 def main(args: argparse.Namespace) -> None:
     print(f"robot={args.robot}", file=sys.stderr)
-    arm = make_arm(args)
-    arm.connect()
+    robot = make_robot(args, auto_enable=False)
     try:
-        values = [float(q) for q in arm.read_state(request_feedback=True)["arm"]["positions"][:6]]
+        values = [float(q) for q in robot.get_robot_state("joint")[:6]]
         if any(math.isnan(v) for v in values):
             print("WARNING: incomplete motor feedback (NaN joints)", file=sys.stderr)
         print(values)
     finally:
-        arm.close(disable=False)
+        robot.disconnect()
 
 
 if __name__ == "__main__":

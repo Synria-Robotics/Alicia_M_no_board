@@ -200,6 +200,10 @@ impl PyRobot {
         self.inner_mut()?.disable().map_err(map_err)
     }
 
+    fn set_zero(&mut self) -> PyResult<()> {
+        self.inner_mut()?.set_zero().map_err(map_err)
+    }
+
     fn get_joint_positions(&self) -> PyResult<Vec<f64>> {
         self.inner_ref()?.get_robot_state_joint().map_err(map_err)
     }

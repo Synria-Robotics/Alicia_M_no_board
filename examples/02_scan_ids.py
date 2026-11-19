@@ -9,12 +9,12 @@ from __future__ import annotations
 
 import argparse
 
-from common import add_robot_arguments, make_arm
+from common import add_robot_arguments
+from api.robot import scan_ids
 
 
 def main(args: argparse.Namespace) -> None:
-    arm = make_arm(args)
-    ids = arm.scan_ids(
+    ids = scan_ids(
         start_id=args.start_id,
         end_id=args.end_id,
         model=args.model,

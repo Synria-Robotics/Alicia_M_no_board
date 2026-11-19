@@ -9,14 +9,13 @@ from __future__ import annotations
 
 import argparse
 
-from common import add_robot_arguments, make_arm
+from common import add_robot_arguments, make_robot
 
 
 def main(args: argparse.Namespace) -> None:
-    arm = make_arm(args, enable_gripper=True)
+    robot = make_robot(args, auto_enable=False)
     try:
-        arm.connect()
-        state = arm.read_state(request_feedback=True)
+        state = robot.get_arm_state(True)
         arm_state = state["arm"]
         print("current arm position:")
         for name, position in zip(arm_state["names"], arm_state["positions"]):
@@ -31,10 +30,10 @@ def main(args: argparse.Namespace) -> None:
             print("Place the arm at the intended zero pose, then rerun with --yes.")
             return
 
-        arm.set_zero()
+        robot.set_zero()
         print("zero position written")
     finally:
-        arm.close(disable=False)
+        robot.disconnect()
 
 
 if __name__ == "__main__":

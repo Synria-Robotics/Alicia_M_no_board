@@ -139,6 +139,9 @@ class Robot:
             return {"angles": joints, "gripper": self.get_gripper_value()}
         raise NotImplementedError(f"info_type={info_type!r} not supported")
 
+    def get_joint_positions(self) -> list[float]:
+        return list(self._robot.get_joint_positions())
+
     def get_gripper_value(self, request_feedback: bool = True) -> float | None:
         """Measured gripper in user units (0=closed, 1000=open)."""
         native = getattr(self._robot, "get_gripper_value", None)
@@ -280,6 +283,12 @@ class Robot:
             )
         )
 
+    def set_zero(self) -> None:
+        self._robot.set_zero()
+
+    def disconnect(self) -> None:
+        self._robot.disconnect()
+
     def set_home(self, *, speed: float = 40.0) -> None:
         self._robot.go_home(float(speed))
 
@@ -359,26 +368,6 @@ class Robot:
         result["motion_executed"] = bool(executed)
         result["motion_converged"] = bool(converged)
         return result
-
-class RawArm:
-    """Low-level ARX-M-CAN arm access (scan, zero, raw state)."""
-
-    def __init__(
-        self,
-        *,
-        port: str = DEFAULT_PORT,
-        baud: int = DEFAULT_BAUD,
-        enable_gripper: bool = False,
-        config_path: str | Path | None = None,
-    ) -> None:
-        kwargs: dict[str, Any] = {
-            "port": port,
-            "baud": int(baud),
-            "enable_gripper": enable_gripper,
-        }
-        if config_path is not None:
-            kwargs["config_path"] = str(config_path)
-        self._arm = _native.Arm(**kwargs)
 
 def scan_ids(
     *,
