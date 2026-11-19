@@ -129,6 +129,7 @@ impl CommandRefreshLoop {
                 let mut catching_up = false;
                 let mut profile_gains: Option<(Vec<f64>, Vec<f64>)> = None;
                 let mut q_meas_cache = q_des.clone();
+                let mut tau_ff_cache: Option<Vec<f64>> = None;
                 let mut last_feedback_at = std::time::Instant::now();
                 let feedback_period = Duration::from_millis(10);
                 let mut next_tick = std::time::Instant::now() + period;
@@ -311,22 +312,24 @@ impl CommandRefreshLoop {
                                     if last_feedback_at.elapsed() >= feedback_period {
                                         let state = arm.read_state(false).map_err(|_| ())?;
                                         q_meas_cache = state.arm.positions;
+                                        tau_ff_cache = compute_gravity_ff(
+                                            &arm,
+                                            gravity.as_ref(),
+                                            &q_meas_cache,
+                                        );
                                         last_feedback_at = std::time::Instant::now();
                                     }
                                     let q_meas = &q_meas_cache;
-                                    let tau_ff = compute_gravity_ff(&arm, gravity.as_ref(), q_meas);
                                     let (q_send, dq_send) = gov.apply(
                                         &q_ideal,
                                         &dq_ideal,
                                         q_meas,
-                                        tau_ff.as_deref(),
+                                        tau_ff_cache.as_deref(),
                                         dt,
                                     );
-                                    (q_send, dq_send, tau_ff)
+                                    (q_send, dq_send, tau_ff_cache.clone())
                                 } else {
-                                    let tau_ff =
-                                        compute_gravity_ff(&arm, gravity.as_ref(), &q_ideal);
-                                    (q_ideal, dq_ideal, tau_ff)
+                                    (q_ideal, dq_ideal, tau_ff_cache.clone())
                                 }
                             } else {
                                 (q_ideal, dq_ideal, None)
